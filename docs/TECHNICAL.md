@@ -68,7 +68,7 @@ select_scene(original) 还原用户所在场景
 
 ## 5. 跨图层取样保护
 
-体积光、体积雾、3D 桥接等脚本通过 `obj.load("layer", ...)` / `getpixeldata()` 读取**别的图层**的真实像素缓冲，光束范围由缓冲的 `pw/ph` 推导。代理纹理是 1/div，所以无论 `OBJECT_INFO` 写回还是 LuaJIT 代理都无法补偿 —— 唯一正确做法是让被取样的图层保持全尺寸。
+体积光、体积雾、3D 桥接等脚本通过 `obj.load("layer", ...)` / `getpixeldata()` 读取**别的图层**的真实像素缓冲，光束范围由缓冲的 `pw/ph` 推导。代理纹理是 1/div，所以无论 `OBJECT_INFO` 写回还是 LuaJIT 代理都无法补偿**缓冲尺寸** —— 唯一正确做法是让被取样的图层保持全尺寸。（这只针对缓冲；对 `obj.w/h` 这个**数值**的读取，LuaJIT 代理是有效的，见下节。）
 
 检测按**参数语义**而非脚本名黑名单：扫描 `光源レイヤー` / `対象レイヤー指定` / `target_layer` / `source_layer` 等条目，把数值引用的图层（同时按 1-based UI 与 0-based SDK 编号）标记，给这些图层上已有的 ProxyLayer 置 `本图层保持原图=1`。新增第三方脚本因此自动被覆盖。
 
@@ -84,7 +84,8 @@ select_scene(original) 还原用户所在场景
 
 ## 8. 其它已证伪的路线
 
-- **原生 `OBJECT_INFO` 写回 `obj.w/h`**：Lua 侧读到的仍是纹理尺寸，无效。
+- **原生 `OBJECT_INFO` 写回 `obj.w/h`**：Lua 侧读到的仍是纹理尺寸，无效。对应的 `补偿 obj.w/h (实验)` 参数项、`DrawProxy()` 的 `compensate` 分支与 `OBJCOMP` 日志已在 **v0.2.1 移除**（`.aup2` 参数按名字保存，删项不会让旧工程参数错位）。
+  - **注意区分**：可选的 `luaJIT.dll` 转发代理**不是**这条。它拦截宿主写入 `obj.w/h` 的 `lua_setfield` 并映射回原尺寸，A/B 实测 1024 → 2048 有效。OpenGlow / 光束_H 等按 `obj.w/h` 算作用范围的脚本依赖它，**必须保留**；主插件的 `ProxyLayer_MapSize` 导出与 `RegisterSizeMap()` 也因它而保留。
 - **修改 Lua metatable / 在效果链间传递补偿值**：Lua 探针三次证伪。
 - **mode 5（只在首帧上传纹理）**：宿主每帧重建对象图像，第 2 帧起全空白，已移除。
 - **CPU 拷贝优化**：实测无收益。

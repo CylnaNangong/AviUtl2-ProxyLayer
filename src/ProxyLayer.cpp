@@ -255,20 +255,22 @@ static auto item_sim_save = FILTER_ITEM_CHECK(L"模拟导出态", false);
 // when a manually-added ProxyLayer sits in front of a size-dependent script.
 // FallbackL0 calls set_image_data(..., W, H), so obj.w/obj.h stay untouched.
 static auto item_keep_original = FILTER_ITEM_CHECK(L"本图层保持原图", false);
-// EXPERIMENTAL, DEFAULT OFF. Tried to restore OBJECT_INFO::width/height after
-// set_image_data() so scripts would see the original obj.w/obj.h. A real Lua
-// probe DISPROVED it: the host feeds Lua from the image texture size, not from
-// OBJECT_INFO, so obj.w stayed 1/div (2048 -> 1024). Kept only for further
-// experiments; do not rely on it. Use 「本图层保持原图」 instead.
-static auto item_compensate = FILTER_ITEM_CHECK(L"补偿 obj.w/h (实验)", false);
+// NOTE: the experimental 「补偿 obj.w/h」 item was REMOVED. Writing back
+// OBJECT_INFO::width/height was DISPROVED by a real Lua probe: the host feeds
+// Lua from the current texture size, not from OBJECT_INFO (2048 -> 1024).
+// Size compensation now lives in the OPTIONAL same-name luaJIT.dll proxy
+// (ProxyLayer_MapSize + a lua_setfield wrapper), and scripts can always read
+// 「原始宽」/「原始高」 via obj.getvalue().
 
 // Compensation data for DOWNSTREAM filters/scripts.
 // set_image_data() shrinks the object image, so obj.w/obj.h become 1/div of
-// the source. The official script doc says obj.w/h are always the object's
-// pixel count and are ReadOnly - there is no SDK way to keep the effect chain
-// running AND leave obj.w/h untouched. Scripts can instead read the original
-// size via obj.getvalue("ProxyLayer","原始宽"/"原始高") and compensate.
-// Both are written once, at conversion time, from the host's own image cache.
+// the source and are ReadOnly from Lua. Two supported ways out:
+//   - scripts read 「原始宽」/「原始高」 via obj.getvalue() and scale themselves;
+//   - the OPTIONAL same-name luaJIT.dll proxy maps obj.w/h back transparently
+//     (ProxyLayer_MapSize + a lua_setfield wrapper, see src/ProxyLuaJIT.cpp).
+// Writing OBJECT_INFO::width/height does NOT work (disproved); that path was
+// removed. Both values are written once, at conversion time, from the host's
+// own image cache.
 static auto item_src_w = FILTER_ITEM_TRACK(L"原始宽", 0, 0, 65536, 1.0, L"未设置");
 static auto item_src_h = FILTER_ITEM_TRACK(L"原始高", 0, 0, 65536, 1.0, L"未设置");
 // Remembers what was replaced so the OFF switch restores the EXACT original
@@ -279,7 +281,7 @@ static auto item_origin_item   = FILTER_ITEM_STRING(L"原始文件名项", L"");
 static void* items[] = {
     &separator, &item_file, &item_mode, &item_level,
     &item_force_l0, &item_probe, &item_mark, &item_sim_save,
-    &item_keep_original, &item_compensate,
+    &item_keep_original,
     &item_src_w, &item_src_h, &item_origin_effect, &item_origin_item, nullptr
 };
 
@@ -489,9 +491,9 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
             }
             // Downstream effects are NOT screened out: colour grading, keying
             // and similar 2D filters are extremely common and must still get
-            // the speed-up. Instead the render path compensates obj.w/obj.h
-            // (see func_proc_video mode 3), so size-reading scripts keep
-            // seeing the ORIGINAL dimensions.
+            // the speed-up. Size-reading scripts are covered by the optional
+            // luaJIT.dll proxy (obj.w/h) and by cross-layer sampling
+            // protection (getpixeldata() buffers); see docs/TECHNICAL.md.
             EFFECT_HANDLE ne = e->create_effect(o, L"ProxyLayer");
             if (!ne) continue;
             e->set_effect_item_value(ne, L"画像ファイル", path.c_str());
@@ -1836,7 +1838,7 @@ static bool LazyL0(FILTER_PROC_VIDEO* v, const SourceView& src,
 // Shared drawing code for both the cached (no original decode) and first-frame
 // (decode + build) paths. `src` may have data == nullptr in the cached path.
 static bool DrawProxy(FILTER_PROC_VIDEO* v, ProxyEntry& px, int div,
-                      int W, int H, int mode, bool compensate,
+                      int W, int H, int mode,
                       const SourceView& src, const std::wstring& file) {
     if (mode == 1) {
         const std::vector<std::wstring> textures = EnsureTextures(v, px);
@@ -1872,16 +1874,6 @@ static bool DrawProxy(FILTER_PROC_VIDEO* v, ProxyEntry& px, int div,
     }
     if (mode == 3) {
         v->set_image_data(px.pm.data(), px.pw, px.ph);
-        if (compensate && v->object) {
-            OBJECT_INFO* oi = const_cast<OBJECT_INFO*>(v->object);
-            const int beforeW = oi->width, beforeH = oi->height;
-            oi->width  = W;
-            oi->height = H;
-            static std::atomic<int> comp_logged{ 0 };
-            if (comp_logged.fetch_add(1) < 3)
-                LogF(L"OBJCOMP: texture %dx%d, after_upload=%dx%d -> %dx%d (div=%d)",
-                     px.pw, px.ph, beforeW, beforeH, W, H, div);
-        }
         // param is a RELATIVE setting (same as obj.ox / obj.sx).
         v->param->sx *= (float)div;
         v->param->sy *= (float)div;
@@ -2097,8 +2089,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
         if (!px || px->pm.empty())
             return LazyL0(v, src, file, L"proxy build failed; falling back to L0");
         if (div > 1) RegisterSizeMap(px->pw, px->ph, W, H);
-        return DrawProxy(v, *px, div, W, H, mode,
-                         item_compensate.value, src, file);
+        return DrawProxy(v, *px, div, W, H, mode, src, file);
     };
 
     if (px) {
