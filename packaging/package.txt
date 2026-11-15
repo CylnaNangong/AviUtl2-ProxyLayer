@@ -1,0 +1,23 @@
+[ ProxyLayer / 代理图层 — {{TAG}} ]
+
+[简体中文]
+AviUtl ExEdit2 的预览代理图层插件。
+把整个工程里的大尺寸静态图像一键换成低分辨率代理，播放立刻变流畅；导出时自动还原原图。
+・安装后重启 AviUtl2，在「编辑」菜单 →「代理图层」→「整个工程自动代理 (开/关)」打开开关。
+・需要 obj.w/obj.h 补偿的用户，请另外下载同版本 Installer 包，一键安装可选的 luaJIT.dll 转发代理。
+・首次播放需要构建代理缓存，开头几秒偏慢；播放 10-20 秒后再判断流畅度。
+・本包只包含主插件 ProxyLayer.aux2，不会修改 aviutl2.exe 同目录的任何文件。
+
+[日本語]
+AviUtl ExEdit2 用プレビュー用プロキシレイヤープラグインです。
+プロジェクト全体の大きな静止画像をワンクリックで低解像度プロキシに置き換え、再生を快適にします。
+出力時は自動的に原寸へ戻ります。導入後は AviUtl2 を再起動してください。
+
+[English]
+Preview proxy layer plugin for AviUtl ExEdit2.
+One click converts every large still image in the WHOLE PROJECT into a downscaled proxy;
+exports always use the original full-resolution image. Restart AviUtl2 after installing.
+For obj.w/obj.h compensation, grab the matching -Installer.zip and run install.bat.
+
+Author: 南宮若馨Cylna (CylnaNangong) & WorkBuddy AI (Tencent Hunyuan Hy)
+License: MIT

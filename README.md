@@ -28,6 +28,26 @@
 
 ## 安装
 
+### 从 Release 一键安装（推荐）
+
+每个 Release 提供两个包，按需选一个：
+
+| 包 | 内容 | 适用 |
+| --- | --- | --- |
+| `ProxyLayer-<tag>.au2pkg.zip` | 只含 `Plugin/ProxyLayer.aux2`，拖进 AviUtl2 窗口即装 | 绝大多数用户；**不碰** `aviutl2.exe` 同目录 |
+| `ProxyLayer-<tag>-Installer.zip` | 主插件 + 可选 `luaJIT.dll` 转发代理 + `install.bat` | 需要 `obj.w/obj.h` 尺寸补偿的用户 |
+
+**Installer 包的一键流程**（这就是「把原 DLL 改名、放进自己的 DLL」那一步）：
+
+1. 解压整个 zip → 双击 `install.bat`。
+2. 脚本自动定位 `aviutl2.exe` 和数据目录，装好主插件。
+3. 自动把原来的 `luaJIT.dll` 备份为 `luaJIT.dll.bak-<时间戳>`，改名成 `luaJIT_real.dll`，再把本包的转发代理复制成 `luaJIT.dll`。代理里的 PE forwarder 会把 322 个 LuaJIT 导出解析到 `luaJIT_real.dll`。
+4. 重启 AviUtl2 生效。双击 `uninstall.bat` 可完整还原。
+
+`install.ps1` 支持 `-ExePath "D:/AviUtl2/aviutl2.exe"`、`-SkipLuaProxy`、`-Uninstall`；幂等，重复运行不会重复改名。若宿主目录本来没有 `luaJIT.dll`，会跳过代理安装并提示，主插件照常可用。
+
+### 手动安装
+
 1. 取 `dist/ProxyLayer.aux2`（或按下方自行编译）。
 2. 放到 AviUtl2 数据目录的 `Plugin\` 下：
    - 普通安装：`C:/ProgramData/aviutl2/Plugin/`
@@ -96,6 +116,27 @@ VS_BASE="D:/VS2022" MSVC_VER=14.42.34433 SDKV=10.0.26100.0 bash build_msvc.sh
 
 产物在 `dist/ProxyLayer.aux2`。`build_luaproxy.sh` 构建可选的 LuaJIT 同名代理 DLL，`build_exportprobe.sh` 构建导出测试探针（都不进默认安装包）。
 
+## 发版（一键 Release）
+
+工作流在 `.github/workflows/release.yml`。**推一个 `v*` tag 就够了**：
+
+```bash
+# 1. 本地编译好，把新的 dist/ProxyLayer.aux2（必要时还有 dist/luaJIT.dll）提交
+git add dist/ && git commit -m "build: refresh binaries for v0.2.1"
+# 2. 打 tag 并推送，CI 自动建 Release + 打包 + 上传资产
+git tag v0.2.1 && git push origin main && git push origin v0.2.1
+```
+
+CI 会 `checkout` 该 tag、跑 `packaging/build_release.py --tag <tag>` 生成两个 zip、用 `gh release create`（若尚无 Release）和 `gh release upload --clobber` 发布，并在 workflow summary 里列出 SHA-256。也支持先在网页上发 Release 再触发，或在 Actions 里手动 `workflow_dispatch` 指定 tag 重跑。
+
+> 工作流**不编译** DLL：官方 SDK 头文件不在本仓库，CI 直接使用已提交的 `dist/` 二进制。发版前记得刷新它们。
+
+本地预览打包结果：
+
+```bash
+python3 packaging/build_release.py --tag v0.2.0 --out-dir dist
+```
+
 ## 目录
 
 ```
@@ -110,6 +151,14 @@ tools/read_perf.py      汇总 ProxyLayer-perf.log 遥测
 dist/ProxyLayer.aux2    预编译二进制
 docs/TECHNICAL.md       实现细节与实测数据
 ```
+
+## 鸣谢
+
+- **天国的 HitFilm** —— 「打开开关就自动流畅」这个目标，最初就是从它那儿搬来的。愿它在另一个次元继续实时预览。
+- **WorkBuddy 里的 AI 搭子（腾讯混元 Hy）** —— 一起啃完四份 minidump、把 `find_object` 的真语义翻出来、把 21 个场景逐个走完，顺手写下这份 README、打包脚本和 CI。
+- **腾讯公司提供的免费算力大力支持**（笑）—— 没有这些 token，上面那些「再试一次」「再对一遍」都不会发生。
+
+以及 AviUtl2 SDK 的原作者 ＫＥＮくん，和所有写脚本、报问题、耐心反复试真机的人。参考仓库 [AviUtl2_VolumetricLight3D](https://github.com/CylnaNangong/AviUtl2_VolumetricLight3D) 提供了 `.au2pkg.zip` 打包与 Release 工作流的范式。
 
 ## 许可
 

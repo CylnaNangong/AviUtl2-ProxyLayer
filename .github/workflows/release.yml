@@ -1,0 +1,122 @@
+name: release
+
+# One push of a v* tag builds the packages, creates the GitHub Release and
+# uploads the assets. Also supports the "publish a release first" workflow
+# used by the VolumetricLight3D repo, plus a manual re-run for any tag.
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (blank = latest release), e.g. v0.2.0'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create the GitHub Release if it does not exist yet'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: proxylayer-release-assets
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [ -z "$TAG" ] && [[ "$REF_NAME" == v* ]]; then TAG="$REF_NAME"; fi
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+([.0-9a-zA-Z_-]*)$ ]]; then
+            echo "::error::Invalid release tag '${TAG}' (expected e.g. v0.2.0)"
+            exit 1
+          fi
+          echo "Resolved release tag: ${TAG}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build .au2pkg.zip and one-click Installer.zip
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 packaging/build_release.py --tag "$TAG" --out-dir dist
+          for f in "dist/ProxyLayer-${TAG}.au2pkg.zip" "dist/ProxyLayer-${TAG}-Installer.zip"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Expected package '$f' was not produced"
+              ls -la dist/
+              exit 1
+            fi
+          done
+          {
+            echo "### ProxyLayer ${TAG} release packages"
+            echo ""
+            echo "| File | Size (bytes) | SHA-256 |"
+            echo "| :--- | ---: | :--- |"
+            for f in dist/*.zip; do
+              echo "| \`$(basename "$f")\` | $(wc -c < "$f" | tr -d ' ') | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"
+          sha256sum dist/*.zip
+
+      - name: Ensure the GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          CREATE: ${{ inputs.create_release }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists"
+          elif [ "${CREATE:-}" = "false" ]; then
+            echo "::error::Release ${TAG} does not exist and create_release=false"
+            exit 1
+          else
+            gh release create "$TAG" --repo "$REPO" \
+              --title "ProxyLayer ${TAG}" --generate-notes
+          fi
+
+      - name: Upload packages to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/*.zip --repo "$REPO" --clobber
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyLayer-${{ steps.meta.outputs.tag }}-packages
+          path: dist/*.zip
+          if-no-files-found: error

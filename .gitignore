@@ -1,5 +1,6 @@
 # Build artefacts
 build/
+dist/*.zip
 *.obj
 *.exp
 *.lib
