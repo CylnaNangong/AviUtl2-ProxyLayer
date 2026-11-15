@@ -191,8 +191,19 @@ if ($SkipLuaProxy) {
             Rename-Item -LiteralPath $origDll -NewName 'luaJIT_real.dll' -Force
             Ok '原 luaJIT.dll 已改名为 luaJIT_real.dll'
         } else {
-            Copy-Item -LiteralPath $realDll -Destination "$realDll.bak-$stamp" -Force
-            Ok 'luaJIT_real.dll 已存在，仅覆盖 luaJIT.dll'
+            # An AviUtl2 update usually overwrites luaJIT.dll with a newer
+            # official build. Keeping the OLD luaJIT_real.dll would leave our
+            # PE forwarders pointing at a different LuaJIT build, so refresh
+            # the forwarding target from the CURRENT official DLL. The old
+            # real DLL is backed up, never deleted.
+            if ((Sha $realDll) -ne (Sha $origDll)) {
+                Copy-Item -LiteralPath $realDll -Destination "$realDll.bak-$stamp" -Force
+                Copy-Item -LiteralPath $origDll -Destination $realDll -Force
+                Warn 'luaJIT.dll 与 luaJIT_real.dll 不一致（AviUtl2 可能已更新）：已用当前官方 DLL 刷新转发目标'
+                Warn '若新版 LuaJIT 导出表有增减，请改用新版 Release 的代理 DLL（旧代理可能缺符号）'
+            } else {
+                Ok 'luaJIT_real.dll 与当前官方 DLL 一致，直接复用'
+            }
         }
         Copy-Item -LiteralPath $proxySrc -Destination $origDll -Force
         Ok "转发代理已就位 -> $origDll"

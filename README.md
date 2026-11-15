@@ -137,6 +137,28 @@ CI 会 `checkout` 该 tag、跑 `packaging/build_release.py --tag <tag>` 生成�
 python3 packaging/build_release.py --tag v0.2.0 --out-dir dist
 ```
 
+## 更新与兼容性（DLL 要不要重新编译）
+
+先分清是**哪一种**更新：
+
+| 更新了什么 | `ProxyLayer.aux2` | `luaJIT.dll` 转发代理 |
+| --- | --- | --- |
+| 只改文档 / 安装脚本 / Release 工作流 | **不用重编译**，直接复用 `dist/` 里的二进制 | 不用 |
+| 改了 `src/*.cpp`（要发新版） | **必须重编译**，并把新的 `dist/ProxyLayer.aux2` 一起提交。CI **不编译**，只打包已提交的二进制，否则 Release 里装的还是旧 DLL | 通常不用；仅当宿主 LuaJIT 导出表变了，才用 `tools/gen_luaproxy_def.py` + `build_luaproxy.sh` 重新生成 |
+| 升级 AviUtl2 本体 | 一般**不用重编译**，但 SDK 结构有不兼容变更时必须用新头文件重编 | **高风险**，见下 |
+
+### 升级 AviUtl2 本体
+
+主插件只用官方 SDK：`GetFilterPluginTable()` / `InitializePlugin(DWORD version)` / `RegisterPlugin(HOST_APP_TABLE*)`，函数指针取自宿主给的 `HOST_APP_TABLE`，结构体按 `sizeof()` 传给宿主（如 `get_edit_info(&info, sizeof(info))`），**没有硬编码 `aviutl2.exe` 地址或版本号**；`InitializePlugin` 只把 version 记进日志、不做校验。所以 AviUtl2 小版本升级后 DLL 通常可以直接沿用。
+
+但结构体的字段偏移是编译期按 sdk-2.1.16 头文件定死的。若官方改动了 `FILTER_PROC_VIDEO` / `EDIT_SECTION` / `FILTER_PLUGIN_TABLE` 的字段顺序或插入字段，旧 DLL 会读错偏移，这时必须换新 SDK 头重编译。升级后看宿主日志里的 `InitializePlugin host=0x...`，并确认官方更新日志有无插件 API 变更；若出现加载失败或崩溃，先移走 `ProxyLayer.aux2` 做隔离。
+
+**`luaJIT.dll` 转发代理是唯一真正绑死宿主版本的组件**：322 条 PE forwarder 是按当时那份 `luaJIT.dll` 的导出表生成的。AviUtl2 升级若换了 LuaJIT 构建，宿主目录会被覆盖回官方 `luaJIT.dll`：
+
+- `install.ps1` 会检测到 `luaJIT.dll` 与 `luaJIT_real.dll` 不一致，**用当前官方 DLL 刷新转发目标**（旧 real 备份为 `.bak-<时间戳>`），避免新旧 ABI 混用；卸载时也会还原到这版正确的官方 DLL。
+- 但旧代理的导出名集合未必匹配新 LuaJIT。稳妥流程是：升级宿主 → 先跑 `uninstall.bat` 还原 → 确认 AviUtl2 正常启动 → 再装与新版宿主对应的 Release 包。若日志出现 `GetProcAddress` 缺符号，就需要针对新 `luaJIT.dll` 重新生成 `.def` 并重编译代理。
+- 只装 `.au2pkg.zip`（仅主插件）的用户不受这一条影响 —— 那个包完全不碰 exe 同目录。
+
 ## 目录
 
 ```
