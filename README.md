@@ -9,7 +9,7 @@
 
 **🌐 语言 / Language:** &nbsp; **简体中文** &nbsp;|&nbsp; **[日本語 (Japanese)](docs/README_ja.md)** &nbsp;|&nbsp; **[English](docs/README_en.md)**
 
-*(内部键名统一为日语；附带 `Language/简体中文.ProxyLayer.aul2` / `Language/English.ProxyLayer.aul2` 两个显示包)*
+*(内部键名统一为日语；三个语言包提供官方 `[Tips.ProxyLayer]` 悬浮提示，中/英环境另有界面翻译)*
 
 </div>
 
@@ -35,7 +35,7 @@
 - **原始尺寸元数据**：下游脚本可读 `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")` 自行补偿。
 - **严格白名单**：只转换静态图像输入（`画像ファイル` 等）与图片扩展名；音频、视频、OBJ、VRM、3D 模型不会被误转。
 - **全局开关 + 设置窗口**：「确定」保存、「取消」不保存；跨工程、跨重启长期生效。
-- **日语内部键名 + 中/英显示包**：`.aup2` 存储键统一用宿主默认语言（日语），默认日语用户零配置；中文/英文用户靠 `Language/*.ProxyLayer.aul2` 只换显示文本。
+- **日语内部键名 + 官方悬浮 TIPS**：`.aup2` 存储键统一用宿主默认语言（日语）；参数说明走 `[Tips.ProxyLayer]` 悬浮气泡，不再占用参数面板一行。设置窗口与菜单跟随宿主语言。
 - **可选实验组件**：同名 `luaJIT.dll` 转发代理，把 `obj.w/obj.h` 映射回原尺寸（见 `src/ProxyLuaJIT.cpp`，默认不安装）。
 
 ## 安装
@@ -46,8 +46,8 @@
 
 | 包 | 内容 | 适用 |
 | --- | --- | --- |
-| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2` 两个显示包，拖进 AviUtl2 窗口即装 | 绝大多数用户；**不碰** `aviutl2.exe` 同目录 |
-| `ProxyLayer-<tag>-Installer.zip` | 主插件 + 两个显示包 + 可选 `luaJIT.dll` 转发代理 + `install.bat`（日/中/英） | 需要 `obj.w/obj.h` 尺寸补偿的用户 |
+| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2` 三个语言包，拖进 AviUtl2 窗口即装 | 绝大多数用户；**不碰** `aviutl2.exe` 同目录 |
+| `ProxyLayer-<tag>-Installer.zip` | 主插件 + 三个语言包 + 可选 `luaJIT.dll` 转发代理 + `install.bat`（日/中/英） | 需要 `obj.w/obj.h` 尺寸补偿的用户 |
 
 **Installer 包的一键流程**（这就是「把原 DLL 改名、放进自己的 DLL」那一步）：
 
@@ -76,19 +76,23 @@
 
 ## 界面语言（本地化）
 
-**v0.3 起，`.aup2` 中保存的内部键名统一为日语**（AviUtl2 默认语言 `Default`），与社区惯例一致。插件名、菜单与设置窗口文案一律用英语 `ProxyLayer`，所有语言下都相同。
+**v0.3 起 `.aup2` 中保存的内部键名统一为日语**（AviUtl2 默认语言 `Default`），与社区惯例一致。插件效果名固定用英语 `ProxyLayer`。
 
-| 用户语言 | 看到什么 | 需要做什么 |
+| 宿主语言 | 参数名 / 设置窗口 / 菜单 | 需要什么 |
 | --- | --- | --- |
-| `Default`（日语，宿主默认） | 日语参数名 | **什么都不用装** |
-| `简体中文` | 中文参数名 | `Language/简体中文.ProxyLayer.aul2` |
-| `English` | 英文参数名 | `Language/English.ProxyLayer.aul2` |
+| `Default`（日语，宿主默认） | 日语 | `Default.ProxyLayer.aul2`（日语 TIPS）即可，显示名无需翻译 |
+| `简体中文` | 中文 | `简体中文.ProxyLayer.aul2` |
+| `English` | 英文 | `English.ProxyLayer.aul2` |
 
-`.aul2` 只替换**显示文本**，内部键名与 `.aup2` 里保存的内容不变。文件名前缀必须与宿主语言设置值一致：真机 `Language\` 目录里只有 `English.*` / `简体中文.*` / `Default.*`，**没有「日本語」这个语言** —— `Default` 就是日语。
+三个语言包各包含官方 **`[Tips.ProxyLayer]` 悬浮提示段**：`effect.name` 是效果说明，其余 12 个键对应各参数，鼠标悬停即显示（规则见 [docs.aviutl2.jp](https://docs.aviutl2.jp/) 与宿主自带 `简体中文.aul2` 的头注释）。原本挤在参数面板顶部那一整行 `ProxyLayer | ...` 长提示已删除，改到这里。
 
-> ⚠️ **v0.3 是破坏性变更**：v0.2.x 保存的转换态工程里含中文键（`档位` / `原始宽` / `原始效果名` …），新 DLL 不再识别。升级前请先对工程点一次 OFF 还原，或重新执行自动代理。真实工程请在升级前备份。详见 [CHANGELOG.md](CHANGELOG.md)。
+设置窗口和菜单是运行期 C++ 字符串，`.aul2` 的普通翻译段覆盖不到。v0.3.1 起通过官方 `CONFIG_HANDLE::get_language_text()` 读取语言包的 **`[Panel]`** 段，因此它们也跟随宿主语言；未装语言包时回退到日语（宿主默认语言）。
 
-`tools/check_aul2.py` 在 CI 里直接从 `src/ProxyLayer.cpp` 解析 `FILTER_ITEM_*`，校验两个包的词条覆盖率、编码与陈旧键。菜单与自绘设置窗口不在 `.aul2` 覆盖范围内，所以统一用英语。
+> 文件名前缀必须与宿主语言设置值一致：真机 `Language\` 只有 `Default.*` / `简体中文.*` / `English.*` / `Deutsch.*` / `community_*`，**没有「日本語」** —— `Default` 就是日语。
+
+> ⚠️ **v0.3 是破坏性变更**：v0.2.x 保存的转换态工程含中文键，新 DLL 不再识别。升级前先点一次 OFF 还原或重新执行自动代理。详见 [CHANGELOG.md](CHANGELOG.md)。
+
+`tools/check_aul2.py` 在 CI 里从 `src/ProxyLayer.cpp` 解析词条，校验三个包的显示名 / `[Panel]` / `[Tips.ProxyLayer]` 覆盖率与编码。
 
 ## 参数
 
@@ -121,7 +125,7 @@
 - 被跨图层取样的图层会保持全分辨率，因此不享受加速。
 - 只处理静态图像；预览画面会比原图糊，导出不受影响。
 - 首次播放有缓存构建期。
-- 插件菜单项与设置窗口文本是编译期字符串，统一用英语；`.aul2` 只覆盖效果名与参数名，不覆盖菜单与自绘窗口。
+- 菜单与设置窗口通过 `CONFIG_HANDLE::get_language_text()` 读取 `[Panel]` 段跟随宿主语言；切换语言后需重开宿主（菜单在启动时注册）。
 - 某些第三方 Rust/Egui 插件在宿主退出时会 panic，与本插件无关。
 
 ## 构建
@@ -200,7 +204,7 @@ src/ProxyLayer.cpp      主插件
 src/ProxyLuaJIT.cpp     可选：同名 luaJIT.dll 转发代理（实验）
 src/png_writer.h        零依赖 RGBA8 PNG 编码器
 src/ExportProbe.cpp     测试专用：用官方 output_file() 直启真实导出
-Language/*.aul2         中/英界面显示包（日语为宿主默认，无需语言包）
+Language/*.aul2         三个语言包（[Tips] 悬浮提示 + 中/英 [Panel] 与显示名）
 build_*.sh              构建脚本
 tools/gen_luaproxy_def.py  从 luaJIT.dll 导出表生成 322 条 PE forwarder
 tools/dump_stack.py     纯标准库 minidump 分析器（异常/栈/模块直方图）

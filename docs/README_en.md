@@ -5,11 +5,11 @@
 **A native "preview proxy layer" plugin for AviUtl ExEdit2.**  
 Flip one switch and every large still image in the whole project is swapped for a downscaled proxy, so playback becomes smooth immediately. **Exports always restore the original image**, so the delivered video is bit-for-bit unaffected. After conversion the timeline still shows the source file name, so it feels exactly like the built-in “Image File” object.
 
-`ProxyLayer.aux2 v0.3.0` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.1` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 Language:** &nbsp; **[简体中文 (Chinese)](../README.md)** &nbsp;|&nbsp; **[日本語 (Japanese)](README_ja.md)** &nbsp;|&nbsp; **English**
 
-*(Two display packs ship: `Language/简体中文.ProxyLayer.aul2` and `Language/English.ProxyLayer.aul2`; Japanese is the host default)*
+*(Three language packs ship: `Default.*` Japanese tooltips, plus 简体中文 / English display names, [Panel] strings and tooltips)*
 
 <sub>Note: the Japanese and English documents are translations; the Chinese README is authoritative if they ever disagree.</sub>
 
@@ -37,7 +37,7 @@ The proxy level is derived from `sqrt(source pixels / scene pixels)`, rounded up
 - **Original size metadata**: downstream scripts can read `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")` and compensate themselves.
 - **Strict allowlist**: only still-image inputs (`画像ファイル` etc.) and image extensions are converted; audio, video, OBJ, VRM and 3D models are never touched.
 - **Global switch + settings window**: "OK" saves, "Cancel" discards; the state survives project changes and restarts.
-- **Japanese internal keys + two display packs**: `.aup2` keys use the host default language; Japanese users need no pack, Chinese/English users get translated labels only.
+- **Japanese internal keys + official hover tooltips**: `.aup2` keys use the host default language; parameter help lives in `[Tips.ProxyLayer]` tooltips instead of a long separator row.
 - **Optional experimental component**: a same-name `luaJIT.dll` forwarding proxy that maps `obj.w/obj.h` back to the original size (see `src/ProxyLuaJIT.cpp`, not installed by default).
 
 ## Installation
@@ -78,21 +78,25 @@ Softer preview quality is by design; exports always use the original image.
 
 ## UI languages (localization)
 
-Since **v0.3.0 all internal item keys are Japanese** (the AviUtl2 default language, `Default`), matching the convention used by community plugins. The plugin label, menu entries and settings window use English `ProxyLayer` everywhere.
+Since **v0.3.0 all internal item keys are Japanese** (the AviUtl2 default language, `Default`), matching community convention. The effect name and menu root stay English `ProxyLayer`.
 
-| Host language | What you see | What to install |
+| Host language | Parameters / settings window / menus | Pack |
 | --- | --- | --- |
-| `Default` (Japanese, host default) | Japanese parameter names | **Nothing** |
-| `简体中文` | Chinese names | `Language/简体中文.ProxyLayer.aul2` |
-| `English` | English names | `Language/English.ProxyLayer.aul2` |
+| `Default` (Japanese) | Japanese | `Default.ProxyLayer.aul2` (Japanese tooltips only) |
+| `简体中文` | Chinese | `简体中文.ProxyLayer.aul2` |
+| `English` | English | `English.ProxyLayer.aul2` |
 
-`.aul2` packs replace **displayed text only**; `.aup2` storage keys never change. The filename prefix must match the host language setting exactly: real installations only have `Default.*`, `简体中文.*`, `English.*`, `Deutsch.*` and `community_*`. There is **no「日本語」language** — `Default` IS Japanese.
+**v0.3.1 removed the long `ProxyLayer | ...` separator row** from the object settings panel. Its content now lives in the official **`[Tips.ProxyLayer]`** hover tooltips: `effect.name` describes the effect and 12 item keys describe the parameters. See [docs.aviutl2.jp](https://docs.aviutl2.jp/) and the header comment of the host's own `简体中文.aul2`.
+
+The settings window and menus are runtime C++ strings, so ordinary `.aul2` translation cannot reach them. They now use the official `CONFIG_HANDLE::get_language_text()` with a **`[Panel]`** section, so they follow the host language too; without a pack they fall back to Japanese.
+
+The filename prefix must match the host language setting exactly: real installations only have `Default.*`, `简体中文.*`, `English.*`, `Deutsch.*` and `community_*`. There is **no「日本語」language** — `Default` IS Japanese.
 
 > ⚠️ **v0.3.0 is a breaking change**: projects saved with v0.2.x contain old Chinese keys. Restore them with OFF (or re-run auto proxy) before upgrading. See [CHANGELOG.md](../CHANGELOG.md).
 
-`tools/check_aul2.py` parses `src/ProxyLayer.cpp` in CI and validates both packs (12 keys each). Menus and the custom settings window are not covered by `.aul2`, which is why they are plain English.
+Full inventory: [`LOCALIZATION.md`](LOCALIZATION.md).
 
-Full key inventory: [`LOCALIZATION.md`](LOCALIZATION.md).
+## Parameters
 
 | Item (internal key / Japanese) | Meaning |
 | --- | --- |
@@ -123,7 +127,7 @@ Measured data and war stories: [`TECHNICAL.md`](TECHNICAL.md); maintainer-orient
 - Layers sampled by other layers stay at full resolution and therefore gain no speedup.
 - Still images only; previews look softer than the original, exports are unaffected.
 - The first playback builds caches.
-- Menu entries and settings-window text are compile-time English strings; `.aul2` only covers the effect name and parameter names.
+- Menus and the settings window read the `[Panel]` section via `CONFIG_HANDLE::get_language_text()`, so they follow the host language (Japanese fallback).
 - Some third-party Rust/Egui plugins panic when the host exits; unrelated to this plugin.
 
 ## Building
@@ -202,7 +206,7 @@ src/ProxyLayer.cpp      main plugin
 src/ProxyLuaJIT.cpp     optional: same-name luaJIT.dll forwarding proxy (experimental)
 src/png_writer.h        dependency-free RGBA8 PNG encoder
 src/ExportProbe.cpp     test-only: drives a real export through the official output_file()
-Language/*.aul2         Chinese / English display packs (Japanese is the host default)
+Language/*.aul2         Default / 简体中文 / English language packs (tooltips + display names)
 build_*.sh              build scripts
 tools/gen_luaproxy_def.py  generates the 322 PE forwarders from the luaJIT.dll export table
 tools/dump_stack.py     stdlib-only minidump analyzer (exceptions/stacks/module histogram)

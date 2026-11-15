@@ -9,6 +9,7 @@
   install.ps1                    実処理（パラメータは下記）
   package.txt                    パッケージ情報（日 / 中 / 英）
   Plugin/ProxyLayer.aux2         本体プラグイン
+    Default.ProxyLayer.aul2             日本語 TIPS / UI 表示パック（日本語）
   Language/简体中文.ProxyLayer.aul2    UI 表示パック（簡体字中国語）
   Language/English.ProxyLayer.aul2     UI 表示パック（英語）
   LuaProxy/luaJIT.dll            オプションの luaJIT 同名転送プロキシ（実験的）
@@ -70,6 +71,7 @@
   install.ps1                    实际安装逻辑（参数见下）
   package.txt                    包信息（日 / 中 / 英）
   Plugin/ProxyLayer.aux2         主插件
+    Default.ProxyLayer.aul2             界面显示包（日语 TIPS）
   Language/简体中文.ProxyLayer.aul2     界面显示包（简体中文）
   Language/English.ProxyLayer.aul2      界面显示包（英语）
   LuaProxy/luaJIT.dll            可选的 luaJIT 同名转发代理（实验组件）

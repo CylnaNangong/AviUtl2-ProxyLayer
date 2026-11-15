@@ -1,24 +1,18 @@
 //==============================================================================
-//  ProxyLayer.aux2 — AviUtl2 (ExEdit2) preview proxy media object
-//  v0.1 : geometry-alignment probe + multi-variant A/B harness
+//  ProxyLayer.aux2 - AviUtl2 (ExEdit2) preview proxy media object
 //
 //  Built entirely on the OFFICIAL sdk-2.1.16 API. No host hooking, no inline
 //  patching, no changes to aviutl2.exe or to any project file.
 //
-//  The object is a FLAG_INPUT media object. Modes:
-//    0  L0 baseline   : set_image_data(original W,H) + return true
-//    1  Variant A     : draw_image("image:proxy", sx=sy=div) + return false
-//    2  Variant A'    : draw_poly with an explicit W x H quad + UV 0..1
-//                       (geometry pinned, cannot drift with texture resolution)
-//    3  Variant B     : set_image_data(proxy w/div,h/div) + param->sx/sy *= div
-//                       + return true (keeps the entire downstream effect chain)
-//    4  CONTROL       : Variant B WITHOUT compensation -> deliberately 1/div
-//                       size in camera space. Used to prove the pixel-diff test
-//                       actually detects geometric misalignment.
+//  The object is a FLAG_INPUT media object: it replaces the object's image
+//  input with a 1/div downscaled proxy texture, then scales param->sx/sy back
+//  up so geometry, camera and the whole downstream effect chain are unchanged.
+//  Export/save state forces L0 (the original full-resolution image).
 //
-//  Export gate: EDIT_HANDLE::get_edit_state() == EDIT_STATE_SAVE forces L0.
-//  Camera gate : logs is_camera_target()/get_camera_mode()/full transform so the
-//                host-test A/B can judge 3D-space alignment empirically.
+//  Internal item keys are Japanese (the host default language). Display packs
+//  under Language/ translate labels and provide [Tips.ProxyLayer] tooltips.
+//  Menus / the settings window use CONFIG_HANDLE::get_language_text() so they
+//  follow the host language too (Japanese fallback when no pack is installed).
 //==============================================================================
 
 #define WIN32_LEAN_AND_MEAN
@@ -45,6 +39,7 @@
 #include "filter2.h"
 #include "cache2.h"
 #include "logger2.h"
+#include "config2.h"
 #include "plugin2.h"
 #include "png_writer.h"
 
@@ -56,8 +51,43 @@ static CACHE_HANDLE*     g_cache  = nullptr;
 static HOST_APP_TABLE*   g_host   = nullptr;
 static EDIT_HANDLE*      g_edit   = nullptr;
 static DWORD             g_host_version = 0;
+static CONFIG_HANDLE*    g_config = nullptr;   // InitializeConfig(), before InitializePlugin()
 static std::atomic<int>  g_event_state{ -1 };
 static std::mutex        g_mu;
+
+// Menus and the self-drawn settings window are runtime C++ strings, so .aul2
+// display packs cannot reach them. The official CONFIG_HANDLE solves this:
+// get_language_text() looks up [Panel] in the current language file.
+// Keys are short ASCII identifiers (a wording tweak never breaks a pack);
+// the fallback is Japanese, i.e. the host default language. Default-language
+// users therefore need NO display pack at all.
+static std::wstring T(LPCWSTR key, LPCWSTR ja) {
+    if (g_config && g_config->get_language_text) {
+        LPCWSTR t = g_config->get_language_text(g_config, L"Panel", key);
+        if (t && *t) return t;
+    }
+    return ja;
+}
+// .aul2 values may contain "\n" escapes; the host may or may not expand them.
+// Normalise both literal escapes and real newlines to CRLF for the STATIC control.
+static std::wstring NormNL(const std::wstring& in) {
+    std::wstring out;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == L'\\' && i + 1 < in.size() && in[i + 1] == L'n') {
+            out += L"\r\n"; ++i;
+        } else if (in[i] == L'\r') {
+            continue;
+        } else if (in[i] == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+extern "C" __declspec(dllexport) void InitializeConfig(CONFIG_HANDLE* config) {
+    g_config = config;
+}
 
 // ---- Optional LuaJIT proxy support (experimental, NOT in shipping package) --
 // ProxyLuaJIT.dll wraps lua_setfield(). Whenever the host writes obj.w/obj.h
@@ -217,9 +247,6 @@ static void PerfLogLine(const char* line) {
 //------------------------------------------------------------------------------
 // Effect settings
 //------------------------------------------------------------------------------
-static auto separator = FILTER_ITEM_SEPARATOR(
-    L"ProxyLayer | Pick the source image in \"Image File\" below. This REPLACES the object image input; it is not an overlay on an image file.");
-
 static auto item_file = FILTER_ITEM_FILE(
     L"画像ファイル", L"",
     L"Image (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff)\0"
@@ -275,7 +302,7 @@ static auto item_origin_effect = FILTER_ITEM_STRING(L"元のエフェクト名",
 static auto item_origin_item   = FILTER_ITEM_STRING(L"元のファイル項目名", L"");
 
 static void* items[] = {
-    &separator, &item_file, &item_level,
+    &item_file, &item_level,
     &item_force_l0, &item_probe, &item_mark, &item_sim_save,
     &item_keep_original,
     &item_src_w, &item_src_h, &item_origin_effect, &item_origin_item, nullptr
@@ -1065,14 +1092,16 @@ static void UpdatePanelStatus() {
     if (!g_panel_status) return;
     const bool cur = g_auto_proxy.load();
     const bool draft = g_panel_draft.load();
-    wchar_t buf[256];
-    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
-        L"Current: %s   Draft: %s%s\r\n"
-        L"Click OK to save the draft globally.\r\n"
-        L"Applies to EVERY scene - AUTO picks the proxy scale by pixel density.\r\n"
-        L"Full-res on export - scripts can read 元の幅/元の高さ",
-        cur ? L"ON" : L"OFF", draft ? L"ON" : L"OFF",
-        cur == draft ? L"" : L"  (unsaved)");
+    const std::wstring fmt = NormNL(T(L"status",
+        L"現在: %s   草稿: %s%s\n"
+        L"OK を押すと草稿をグローバルに保存します。\n"
+        L"全シーンに適用 - AUTO がピクセル密度から倍率を選びます。\n"
+        L"出力時は元画像 / スクリプトは「元の幅」「元の高さ」を参照可能"));
+    wchar_t buf[512];
+    _snwprintf_s(buf, _countof(buf), _TRUNCATE, fmt.c_str(),
+        g_auto_proxy.load() ? T(L"on", L"ON").c_str() : T(L"off", L"OFF").c_str(),
+        draft ? T(L"on", L"ON").c_str() : T(L"off", L"OFF").c_str(),
+        cur == draft ? L"" : T(L"unsaved", L"  (未保存)").c_str());
     SetWindowTextW(g_panel_status, buf);
     if (g_panel_check)
         CheckDlgButton(g_panel, IDC_SWITCH, draft ? BST_CHECKED : BST_UNCHECKED);
@@ -1099,7 +1128,10 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CREATE: {
         HINSTANCE hi = GetModuleHandleW(nullptr);
-        g_panel_check = CreateWindowExW(0, L"BUTTON", L"Auto proxy (all scenes, saved globally)",
+        const std::wstring sw = T(L"switch", L"自動プロキシ（全シーン、設定を保存）");
+        const std::wstring ok = T(L"ok", L"OK");
+        const std::wstring cancel = T(L"cancel", L"キャンセル");
+        g_panel_check = CreateWindowExW(0, L"BUTTON", sw.c_str(),
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 12, 12, 336, 24,
             h, (HMENU)IDC_SWITCH, hi, nullptr);
         HWND sep = CreateWindowExW(0, L"STATIC", L"",
@@ -1108,10 +1140,10 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_panel_status = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 56, 336, 150,
             h, nullptr, hi, nullptr);
-        g_btn_ok = CreateWindowExW(0, L"BUTTON", L"OK",
+        g_btn_ok = CreateWindowExW(0, L"BUTTON", ok.c_str(),
             WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 180, 216, 84, 30,
             h, (HMENU)IDC_OK, hi, nullptr);
-        g_btn_cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+        g_btn_cancel = CreateWindowExW(0, L"BUTTON", cancel.c_str(),
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 264, 216, 84, 30,
             h, (HMENU)IDC_CANCEL, hi, nullptr);
         SetChildFont(g_panel_check); SetChildFont(sep);
@@ -1207,8 +1239,9 @@ static void CreatePanel(HOST_APP_TABLE* host) {
     RECT rc{ 0, 0, kPanelW, kPanelH };
     AdjustWindowRectEx(&rc, style, FALSE, WS_EX_DLGMODALFRAME);
     const int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
+    const std::wstring title = T(L"title", L"ProxyLayer 自動プロキシ");
     g_panel = CreateWindowExW(WS_EX_DLGMODALFRAME, kPanelClass,
-        L"ProxyLayer Auto Proxy", style,
+        title.c_str(), style,
         CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
         g_host_wnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_panel) { Log(L"Panel: CreateWindowExW failed"); return; }
@@ -1409,16 +1442,25 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host) {
     }
     // One switch for the whole scene: available from both the 編集 menu and
     // the object right-click menu. '\' creates a submenu.
+    // register_*_menu() may keep the pointer, so store the translated strings
+    // in process-lifetime buffers rather than passing a temporary.
+    static std::wstring m[6];
+    m[0] = L"ProxyLayer\\" + T(L"menu.auto", L"自動プロキシ (ON/OFF)");
+    m[1] = L"ProxyLayer\\" + T(L"menu.settings", L"設定ウィンドウ (表示/非表示)");
+    m[2] = L"ProxyLayer\\" + T(L"menu.keepall", L"全レイヤーを元画像に維持");
+    m[3] = L"ProxyLayer\\" + T(L"menu.restore", L"プロキシを全て復元");
+    m[4] = m[0];
+    m[5] = T(L"title", L"ProxyLayer 自動プロキシ");
     if (host->register_edit_menu) {
-        host->register_edit_menu(L"ProxyLayer\\Auto Proxy (All Scenes) ON/OFF", &OnMenuAutoProxy);
-        host->register_edit_menu(L"ProxyLayer\\Settings Window (Show/Hide)", &OnMenuPanel);
-        host->register_edit_menu(L"ProxyLayer\\Keep All Layers Full-Res (Script Compat)", &OnMenuKeepAll);
-        host->register_edit_menu(L"ProxyLayer\\Restore All Proxies", &OnMenuRestoreAll);
+        host->register_edit_menu(m[0].c_str(), &OnMenuAutoProxy);
+        host->register_edit_menu(m[1].c_str(), &OnMenuPanel);
+        host->register_edit_menu(m[2].c_str(), &OnMenuKeepAll);
+        host->register_edit_menu(m[3].c_str(), &OnMenuRestoreAll);
     }
     if (host->register_object_menu)
-        host->register_object_menu(L"ProxyLayer\\Auto Proxy (All Scenes) ON/OFF", &OnMenuAutoProxy);
+        host->register_object_menu(m[4].c_str(), &OnMenuAutoProxy);
     if (host->register_config_menu)
-        host->register_config_menu(L"ProxyLayer Auto Proxy", &OnConfigMenu);
+        host->register_config_menu(m[5].c_str(), &OnConfigMenu);
     const bool lifecycleTest = AutoTestMarkerExists();
     const bool panelTest = PanelTestMarkerExists();
     const bool safetyTest = SafetyTestMarkerExists();

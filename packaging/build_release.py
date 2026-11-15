@@ -7,7 +7,7 @@
                                    (main plugin + display packs + luaJIT proxy)
 
 Both binaries are committed under dist/ so CI never needs the AviUtl2 SDK headers.
-Run locally:  python3 packaging/build_release.py --tag v0.2.0 --out-dir dist
+Run locally:  python3 packaging/build_release.py --tag v0.3.1 --out-dir dist
 """
 import argparse
 import hashlib

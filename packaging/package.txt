@@ -6,9 +6,9 @@ AviUtl ExEdit2 用プレビュー用プロキシレイヤープラグインで�
 出力時は自動的に原寸へ戻るため、書き出した映像の画質は変わりません。
 ・導入後は AviUtl2 を再起動してください。
 ・「編集」メニュー →「ProxyLayer」→「Auto Proxy (All Scenes) ON/OFF」でスイッチを入れます。
-・内部の設定キー名は日本語（ホスト既定言語）です。日本語環境では表示パック不要です。
-  簡体字中国語 / English 環境向けに Language/*.ProxyLayer.aul2 を同梱しています
-  （表示名のみ差し替え、プロジェクトファイルの内容は変わりません）。
+・内部の設定キー名は日本語（ホスト既定言語）。Language/*.ProxyLayer.aul2 を 3 種同梱：
+  Default は日本語の [Tips.ProxyLayer] ホバー説明、简体中文 / English は表示名・
+  設定ウィンドウ文言・TIPS を提供します（表示のみ、プロジェクトの内容は不変）。
 ・初回再生ではプロキシキャッシュを構築するため、最初の数秒は重くなります。
 ・obj.w/obj.h のサイズ補正が必要な方は、同じタグの -Installer.zip の install.bat を実行してください。
 ・{{TAG}} は破壊的変更です。v0.2.x で保存した変換済みプロジェクトは、先に OFF で復元するか
@@ -19,8 +19,8 @@ AviUtl ExEdit2 用プレビュー用プロキシレイヤープラグインで�
 把整个工程里的大尺寸静态图像一键换成低分辨率代理，播放立刻变流畅；导出时自动还原原图。
 ・安装后请重启 AviUtl2。
 ・在「编辑」菜单 →「ProxyLayer」→「Auto Proxy (All Scenes) ON/OFF」打开开关。
-・内部键名统一为日语（宿主默认语言），日语环境无需语言包；本包附带简体中文 / English
-  两个显示包，只改显示名，工程文件内容完全不变。
+・内部键名统一为日语（宿主默认语言）；附带 Default / 简体中文 / English 三个语言包，
+  提供官方 [Tips.ProxyLayer] 悬浮提示与中英界面文案，工程文件内容完全不变。
 ・首次播放需要构建代理缓存，开头几秒偏慢。
 ・需要 obj.w/obj.h 补偿请下载同 tag 的 -Installer.zip 并运行 install.bat。
 ・{{TAG}} 为破坏性变更：v0.2.x 保存的转换态工程请先点 OFF 还原，或重新执行自动代理。
@@ -31,9 +31,9 @@ One click converts every large still image in the WHOLE PROJECT into a downscale
 exports always use the original full-resolution image.
 - Restart AviUtl2 after installing.
 - Switch it on under Edit menu -> ProxyLayer -> Auto Proxy (All Scenes) ON/OFF.
-- Internal item keys are Japanese (the host default language), so Japanese users need no
-  display pack. Simplified Chinese and English packs are included; they change DISPLAY
-  TEXT only, so existing projects are untouched.
+- Internal item keys are Japanese (the host default language). Three packs are included:
+  Default (Japanese [Tips.ProxyLayer] hover tooltips), Simplified Chinese and English
+  (display names, settings-window text and tooltips). DISPLAY TEXT only.
 - The first playback builds the proxy cache and is slower for a few seconds.
 - For obj.w/obj.h compensation, grab the matching -Installer.zip and run install.bat.
 - {{TAG}} is a breaking change: projects saved by v0.2.x must be restored with OFF

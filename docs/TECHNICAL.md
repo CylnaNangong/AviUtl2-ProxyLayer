@@ -96,10 +96,12 @@ select_scene(original) 还原用户所在场景
 **v0.3 起内部键名统一为日语**（AviUtl2 默认语言 `Default`）。这是与参考仓库 VolumetricLight3D 一致的社区惯例：插件编译进去的 `FILTER_ITEM_*` 名字就是宿主默认语言，其他语言靠 `.aul2` 差异包把显示名翻过去。
 
 - 宿主按当前语言加载 `Language/<语言名>.*.aul2` 差异文件；真机语言列表只有 `Default` / `简体中文` / `English` / `Deutsch` / `community_*`，**没有「日本語」** —— `Default` 就是日语，且只读取 `Default.*.aul2`。官方规则写在宿主自带 `简体中文.aul2` 的头部注释里。
-- 因此只需两个显示包：`简体中文.ProxyLayer.aul2`、`English.ProxyLayer.aul2`。默认日语用户零配置。
+- 当前三个语言包：`Default.ProxyLayer.aul2`（只放日语 `[Tips.ProxyLayer]` 悬浮提示，默认语言无需翻译显示名）、`简体中文.*` 与 `English.*`（显示名 + `[Panel]` + TIPS）。
+- **v0.3.1**：删掉参数面板顶部那行 `FILTER_ITEM_SEPARATOR` 长提示，改用官方 `[Tips.ProxyLayer]` 悬浮气泡（规则见宿主 `简体中文.aul2` 头注释 / docs.aviutl2.jp）。`effect.name` 写效果说明，其余 12 个键写参数说明，值里 `\n` 换行；真机沙箱实测中文气泡正常弹出。
 - **实测**（隔离沙箱，三轮）：`日本語.ProxyLayer.aul2` 放在 `Language=`（Default）下完全不生效，参数仍显示旧中文；同一文件改名 `Default.ProxyLayer.aul2` 后 `档位→プロキシ倍率` 等全部生效；三包并存且 `Language=简体中文` 时中文包生效、不被 Default 日文包污染。这促成了"直接把内部键改成日语、不再需要日文包"的决定。
 - `.aul2` 只改**显示**，不改 `.aup2` 存储键。键必须是源码字符串的逐字拷贝；差一个字符静默回退，所以 `tools/check_aul2.py` 从 `src/ProxyLayer.cpp` 解析词条并在 CI 校验覆盖率（当前 12 键 × 2 包）。
-- **绝不翻译内部名 `ProxyLayer`**：`create_effect()` / `get_effect_name()` 以及 9 处 `wcscmp(..., L"ProxyLayer")` 依赖它。插件的显示标签、菜单与设置窗口文案统一用英语 `ProxyLayer`，所有语言下相同 —— `.aul2` 本来就覆盖不到 `register_*_menu()` 注册的菜单项和自绘窗口文本，用英语可避免任何语言的用户看到外语菜单。
+- **绝不翻译内部名 `ProxyLayer`**：`create_effect()` / `get_effect_name()` 以及 9 处 `wcscmp(..., L"ProxyLayer")` 依赖它；效果名与菜单根名固定英语。
+- **菜单 / 设置窗口跟随语言**：导出 `InitializeConfig(CONFIG_HANDLE*)`（SDK 保证在 `InitializePlugin()` 之前调用）保存句柄，用 `get_language_text(handle, L"Panel", key)` 读取各语言包的 `[Panel]` 段；缺包或缺键时回退日语。菜单在启动时注册，所以切换语言需重开宿主；面板每次显示时重新取，立即生效。
 
 > **破坏性变更**：v0.2.x 保存的转换态工程含中文键（`档位` / `原始宽` / `原始效果名` / `原始文件名项`），v0.3 不再识别。元数据丢失会让 OFF 还原退回 `画像ファイル`（音频 / 3D 对象可能被错误还原）。因为当时还没有真实用户工程保存转换态，未在 DLL 内做旧键别名兼容；升级前先 OFF 还原或重新转换。
 

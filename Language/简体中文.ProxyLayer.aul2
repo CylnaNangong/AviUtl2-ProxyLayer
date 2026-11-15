@@ -1,14 +1,14 @@
-; ProxyLayer 简体中文显示包
-; 放置位置: <数据目录>\Language\
-; v0.3 起插件内部键名已统一为日语（AviUtl2 默认语言），
-; 本文件只把显示名翻译成中文；.aup2 中保存的键名不变。
+;===============================================================
+; ProxyLayer display pack / tooltips - 简体中文
+; Place in: <data folder>\Language\
+; Internal keys are Japanese (host default language).
+; [Tips.ProxyLayer] = official hover tooltips (see docs.aviutl2.jp)
+;===============================================================
 [Language]
-Information=ProxyLayer v0.3 display pack (简体中文)
+Information=ProxyLayer v0.3.1 简体中文 display + tooltip pack
 SubLanguage=简体中文
 
 [ProxyLayer]
-; --- effect label: English for every language (never translated) ---
-; --- items ---
 画像ファイル=图像文件
 プロキシ倍率=代理档位
 出力時は元画像を強制=导出时强制原图
@@ -21,3 +21,32 @@ SubLanguage=简体中文
 元のエフェクト名=原始效果名
 元のファイル項目名=原始文件名项
 未設定=未设置
+
+[Panel]
+title=ProxyLayer 自动代理
+switch=自动代理（整个工程·所有场景，长期生效）
+ok=确定
+cancel=取消
+on=已开启
+off=已关闭
+unsaved=  （未保存）
+status=状态：%s  草稿：%s%s\n草稿改动需点「确定」才保存并生效。\n整个工程生效（自动遍历全部场景）· AUTO 按场景像素密度选档\n导出回原图 · 下游可读「元の幅/元の高さ」
+menu.auto=整个工程自动代理 (开/关)
+menu.settings=设置窗口 (显示/隐藏)
+menu.keepall=全部图层保持原图 (脚本兼容)
+menu.restore=恢复全部代理
+
+[Tips.ProxyLayer]
+effect.name=把整个工程里的大尺寸静态图像一键换成低分辨率代理，让预览播放变流畅。\n导出 / 保存时自动还原原图，成片画质不受影响。\n在下方「图像文件」指定素材：这是替换物件的图像输入，不是叠加在图像文件之上的效果。
+画像ファイル=指定作为代理来源的图像文件。
+プロキシ倍率=AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32。AUTO 按素材与场景的像素数自动选档。
+出力時は元画像を強制=检测到保存 / 输出状态时强制还原原图。
+プローブログを出力=输出调试用的运行日志。
+プロキシマーカーを表示=显示可确认代理确实生效的标记。
+出力状態をシミュレート=自测专用：模拟导出状态。
+このレイヤーは元画像を維持=仅让本图层退出代理、保持原图。
+元の幅=原图宽度，下游脚本可用 obj.getvalue() 读取。
+元の高さ=原图高度，下游脚本可用 obj.getvalue() 读取。
+元のエフェクト名=供 OFF 还原用的原效果名。
+元のファイル項目名=供 OFF 还原用的原文件名项。
+未設定=表示该值尚未设置。

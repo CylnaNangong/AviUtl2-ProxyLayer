@@ -1,14 +1,14 @@
-; ProxyLayer English display pack
+;===============================================================
+; ProxyLayer display pack / tooltips - English
 ; Place in: <data folder>\Language\
-; Since v0.3 all internal item keys are Japanese (the host default language).
-; This file only translates DISPLAY names; .aup2 storage keys never change.
+; Internal keys are Japanese (host default language).
+; [Tips.ProxyLayer] = official hover tooltips (see docs.aviutl2.jp)
+;===============================================================
 [Language]
-Information=ProxyLayer v0.3 display pack (English)
+Information=ProxyLayer v0.3.1 English display + tooltip pack
 SubLanguage=English
 
 [ProxyLayer]
-; --- effect label: English for every language (never translated) ---
-; --- items ---
 画像ファイル=Image File
 プロキシ倍率=Proxy scale
 出力時は元画像を強制=Force original on export
@@ -21,3 +21,32 @@ SubLanguage=English
 元のエフェクト名=Original effect name
 元のファイル項目名=Original file item name
 未設定=Not set
+
+[Panel]
+title=ProxyLayer Auto Proxy
+switch=Auto proxy (all scenes, saved globally)
+ok=OK
+cancel=Cancel
+on=ON
+off=OFF
+unsaved=  (unsaved)
+status=Current: %s   Draft: %s%s\nClick OK to save the draft globally.\nApplies to EVERY scene - AUTO picks the proxy scale by pixel density.\nFull-res on export - scripts can read 元の幅/元の高さ
+menu.auto=Auto Proxy (All Scenes) ON/OFF
+menu.settings=Settings Window (Show/Hide)
+menu.keepall=Keep All Layers Full-Res (Script Compat)
+menu.restore=Restore All Proxies
+
+[Tips.ProxyLayer]
+effect.name=One click converts every large still image in the WHOLE PROJECT into a downscaled proxy for smooth preview playback.\nExports always use the original full-resolution image.\nPick the source in "Image File" below: this REPLACES the object image input; it is not an overlay on an image file.
+画像ファイル=The source image file used to build the proxy.
+プロキシ倍率=AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32. AUTO picks a scale from the source and scene pixel counts.
+出力時は元画像を強制=Force the full-resolution original whenever a save/export state is detected.
+プローブログを出力=Write diagnostic runtime logs.
+プロキシマーカーを表示=Show a marker that proves the proxy is really in use.
+出力状態をシミュレート=Self-test only: simulate the export state.
+このレイヤーは元画像を維持=Opt this single layer out of proxying and keep the original image.
+元の幅=Original image width; downstream scripts can read it with obj.getvalue().
+元の高さ=Original image height; downstream scripts can read it with obj.getvalue().
+元のエフェクト名=Original effect name, used when switching the proxy OFF.
+元のファイル項目名=Original file item name, used when switching the proxy OFF.
+未設定=Indicates that the value has not been set.

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.1 — 2026-11-15
+
+- **删除参数面板顶部的 `FILTER_ITEM_SEPARATOR` 长提示行**（那行 `ProxyLayer | Pick the source image...` 又长又被截断）。改用官方 **`[Tips.ProxyLayer]`** 悬浮气泡：`effect.name` 写效果说明，12 个参数键写各自说明，鼠标悬停才显示。规则参考 [docs.aviutl2.jp](https://docs.aviutl2.jp/) 与宿主自带 `简体中文.aul2` 头注释「若定义如 `[Tips.ぼかし]` 这样在滤镜名称前加上 "Tips." 的区段，则可定义物件设置中设置项工具提示中的文字」。真机沙箱实测气泡正常弹出。
+- **设置窗口与菜单跟随宿主语言**：导出官方 `InitializeConfig(CONFIG_HANDLE*)`（在 `InitializePlugin()` 之前调用）保存句柄，用 `get_language_text(handle, L"Panel", key)` 翻译窗口标题 / 开关 / 按钮 / 状态文本 / 菜单项。语言包新增 **`[Panel]`** 段（12 个 ASCII 标识符键），未装包时回退日语（宿主默认语言）。中文环境实测：`ProxyLayer 自动代理` / `自动代理（整个工程·所有场景，长期生效）` / `确定` / `取消`，菜单亦为中文。
+- 语言包由 2 个变回 **3 个**：`Default.ProxyLayer.aul2`（只放日语 TIPS，默认语言无需翻译显示名）、`简体中文.*` 与 `English.*`（显示名 + `[Panel]` + TIPS）。`tools/check_aul2.py` 重写为按 section 校验：每个包必须有 `[Tips.ProxyLayer]`（`effect.name` + 12 键），非 Default 包还须有 12/12 显示名与 `[Panel]`。
+- CI 的 `test -f` 与 zip 内语言包检查同步加入 `Default.*`；`build_release.py` / `install.ps1` 用 glob 自动包含。
+- 效果名、菜单根名仍为英语 `ProxyLayer`；内部键名、`ProxyLayer_MapSize` 导出与 LuaJIT 转发代理均未改动。
+
+**是否需要重编译 DLL**：是（新增 `InitializeConfig` 导出、删除 separator）。`dist/ProxyLayer.aux2` 119,296 B。
+
 ## v0.3.0 — 2026-11-15（**破坏性变更 / breaking**）
 
 **内部键名统一为日语**（AviUtl2 默认语言 `Default`），与社区惯例一致。升级前请先备份工程。

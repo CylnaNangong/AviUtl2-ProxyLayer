@@ -5,11 +5,11 @@
 **AviUtl ExEdit2 用「プレビュー用プロキシレイヤー」ネイティブプラグイン**  
 スイッチを 1 つ入れるだけで、プロジェクト全体の大きな静止画像が低解像度プロキシに置き換わり、再生がすぐに軽くなります。**出力時は自動的に元画像へ戻る**ため、書き出した映像の画質は一切変わりません。変換後もタイムラインには元のファイル名が表示され、従来の「画像ファイル」と同じ感覚で扱えます。
 
-`ProxyLayer.aux2 v0.3.0` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.1` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 言語 / Language:** &nbsp; **[简体中文 (Chinese)](../README.md)** &nbsp;|&nbsp; **日本語** &nbsp;|&nbsp; **[English](README_en.md)**
 
-*(表示パック 2 言語同梱：`Language/简体中文.ProxyLayer.aul2` / `Language/English.ProxyLayer.aul2`。日本語はホスト既定のため不要)*
+*(言語パック 3 種同梱：`Default.*` は日本語 TIPS、简体中文 / English は表示名・[Panel]・TIPS)*
 
 <sub>※ 本ドキュメントの日本語・英語部分は翻訳です。内容に差異がある場合は中国語版を正とします。</sub>
 
@@ -37,7 +37,7 @@
 - **元サイズのメタデータ**：下流スクリプトは `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")` で補正できます。
 - **厳格なホワイトリスト**：静的画像入力（`画像ファイル` 等）と画像拡張子のみ変換。音声・動画・OBJ・VRM・3D モデルは誤変換しません。
 - **グローバルスイッチ + 設定ウィンドウ**：「確定」で保存、「キャンセル」で破棄。プロジェクトや再起動をまたいで保持されます。
-- **内部キー日本語 + 2 言語表示パック**：`.aup2` のキーはホスト既定言語。日本語環境では表示パック不要、中/英は表示名だけ差し替え。
+- **内部キー日本語 + 公式ホバー TIPS**：`.aup2` のキーはホスト既定言語。パラメータ説明は長い分隔行ではなく `[Tips.ProxyLayer]` の TIPS に格納。
 - **オプションの実験コンポーネント**：同名 `luaJIT.dll` 転送プロキシ（`obj.w/obj.h` を元サイズへ写像。`src/ProxyLuaJIT.cpp`、既定では未インストール）。
 
 ## インストール
@@ -48,8 +48,8 @@ Release ごとに 2 種類のパッケージがあります。必要に応じて
 
 | パッケージ | 内容 | 対象 |
 | --- | --- | --- |
-| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2`（2 言語）を同梱。AviUtl2 のウィンドウへドラッグ & ドロップで導入 | ほとんどの方。**`aviutl2.exe` と同じフォルダには一切触れません** |
-| `ProxyLayer-<tag>-Installer.zip` | 本体 + 2 言語表示パック + オプションの `luaJIT.dll` 転送プロキシ + `install.bat`（日本語 / 中文 / English 表示） | `obj.w/obj.h` のサイズ補正が必要な方 |
+| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2`（3 言語）を同梱。AviUtl2 のウィンドウへドラッグ & ドロップで導入 | ほとんどの方。**`aviutl2.exe` と同じフォルダには一切触れません** |
+| `ProxyLayer-<tag>-Installer.zip` | 本体 + 3 言語パック + オプションの `luaJIT.dll` 転送プロキシ + `install.bat`（日本語 / 中文 / English 表示） | `obj.w/obj.h` のサイズ補正が必要な方 |
 
 **Installer パッケージの手順**（「元の DLL をリネームして自前 DLL を置く」処理）：
 
@@ -78,21 +78,25 @@ Release ごとに 2 種類のパッケージがあります。必要に応じて
 
 ## UI の言語（ローカライズ）
 
-**v0.3.0 から内部の設定キー名はすべて日本語**（AviUtl2 の既定言語 `Default`）です。コミュニティの慣例に合わせたもので、プラグイン表示名・メニュー・設定ウィンドウはどの言語でも英語 `ProxyLayer` に統一しています。
+**v0.3.0 から内部キーはすべて日本語**（AviUtl2 既定言語 `Default`）。効果名とメニューのルートは英語 `ProxyLayer` のままです。
 
-| ホストの言語 | 表示 | 必要なもの |
+| ホスト言語 | パラメータ / 設定ウィンドウ / メニュー | パック |
 | --- | --- | --- |
-| `Default`（日本語・既定） | 日本語のパラメータ名 | **不要** |
-| `简体中文` | 中国語 | `Language/简体中文.ProxyLayer.aul2` |
-| `English` | 英語 | `Language/English.ProxyLayer.aul2` |
+| `Default`（日本語） | 日本語 | `Default.ProxyLayer.aul2`（日本語 TIPS のみ） |
+| `简体中文` | 中国語 | `简体中文.ProxyLayer.aul2` |
+| `English` | 英語 | `English.ProxyLayer.aul2` |
 
-`.aul2` は**表示テキストだけ**を差し替え、`.aup2` に保存されるキー名は変わりません。ファイル名の接頭辞はホストの言語設定値と完全一致させる必要があります。実環境の `Language\` には `Default.*` / `简体中文.*` / `English.*` / `Deutsch.*` / `community_*` しかなく、**「日本語」という言語は存在しません**（`Default` が日本語です）。
+**v0.3.1 で物件設定パネル上部の長い `ProxyLayer | ...` 分隔行を削除**し、公式の **`[Tips.ProxyLayer]`** ホバー TIPS へ移しました。`effect.name` が効果の説明、残り 12 キーが各パラメータの説明です。規則は [docs.aviutl2.jp](https://docs.aviutl2.jp/) とホスト同梱 `简体中文.aul2` のヘッダ注釈を参照。
 
-> ⚠️ **v0.3.0 は破壊的変更**です。v0.2.x で保存した変換済みプロジェクトは古い中国語キーを含みます。アップグレード前に OFF で復元するか、自動プロキシを再実行してください。[CHANGELOG.md](../CHANGELOG.md) 参照。
+メニューと自作設定ウィンドウは実行時 C++ 文字列のため通常の `.aul2` 翻訳は届きません。公式 `CONFIG_HANDLE::get_language_text()` で **`[Panel]`** セクションを読み、ホスト言語に追従します。パック未導入時は日本語へフォールバックします。
 
-`tools/check_aul2.py` が CI で `src/ProxyLayer.cpp` を解析し、2 つの表示パック（各 12 キー）を検証します。メニューと自作設定ウィンドウは `.aul2` の対象外のため、英語に統一しています。
+ファイル名の接頭辞はホストの言語設定値と完全一致が必要です。実環境には `Default.*` / `简体中文.*` / `English.*` / `Deutsch.*` / `community_*` しかなく、**「日本語」という言語は存在しません**（`Default` が日本語です）。
+
+> ⚠️ **v0.3.0 は破壊的変更**です。v0.2.x で保存した変換済みプロジェクトは古い中国語キーを含みます。OFF で復元するか自動プロキシを再実行してください。[CHANGELOG.md](../CHANGELOG.md) 参照。
 
 完全なキー一覧: [`LOCALIZATION.md`](LOCALIZATION.md)。
+
+## パラメータ
 
 | 項目（内部キー / 日本語） | 説明 |
 | --- | --- |
@@ -123,7 +127,7 @@ Release ごとに 2 種類のパッケージがあります。必要に応じて
 - 他レイヤーからサンプリングされるレイヤーは原寸維持のため高速化の対象外です。
 - 静的画像のみ対象です。プレビューは元画像よりぼやけますが、出力には影響しません。
 - 初回再生時にはキャッシュ構築時間がかかります。
-- メニュー項目と設定ウィンドウの文言はコンパイル時の英語文字列です。`.aul2` が対象とするのはエフェクト名とパラメータ名のみです。
+- メニューと設定ウィンドウは `CONFIG_HANDLE::get_language_text()` で `[Panel]` セクションを読み、ホスト言語に追従します（日本語フォールバック）。
 - 一部のサードパーティ製 Rust/Egui プラグインはホスト終了時に panic しますが、本プラグインとは無関係です。
 
 ## ビルド
@@ -202,7 +206,7 @@ src/ProxyLayer.cpp      本体プラグイン
 src/ProxyLuaJIT.cpp     オプション：同名 luaJIT.dll 転送プロキシ（実験）
 src/png_writer.h        依存ゼロの RGBA8 PNG エンコーダ
 src/ExportProbe.cpp     テスト専用：公式 output_file() で実出力を起動
-Language/*.aul2         中/英 表示パック（日本語はホスト既定）
+Language/*.aul2         Default / 简体中文 / English 言語パック（TIPS + 表示名）
 build_*.sh              ビルドスクリプト
 tools/gen_luaproxy_def.py  luaJIT.dll のエクスポート表から 322 個の PE forwarder を生成
 tools/dump_stack.py     標準ライブラリのみの minidump 解析ツール（例外／スタック／モジュール）
