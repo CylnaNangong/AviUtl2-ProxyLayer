@@ -90,3 +90,14 @@ select_scene(original) 还原用户所在场景
 - **mode 5（只在首帧上传纹理）**：宿主每帧重建对象图像，第 2 帧起全空白，已移除。
 - **CPU 拷贝优化**：实测无收益。
 - **盲目提高 div**：AUTO 在 40 MPx 素材上已达上限 8（代理比屏幕还小），再压只糊不快。
+
+## 9. 本地化与显示文本（`.aul2`）
+
+插件是原生 DLL，参数名编译在 `FILTER_ITEM_*` 里，理论上一改就要重编。AviUtl2 的官方语言机制提供了另一条路：宿主按当前语言文件的 section（= 插件文件名 `ProxyLayer`）替换**显示文本**，`.aup2` 里保存的键名不变。
+
+- 于是本地化变成纯数据工作：`Language/{日本語,简体中文,English}.ProxyLayer.aul2`，无需重编 `dist/ProxyLayer.aux2`，旧工程零风险。
+- 键必须是源码字符串的逐字拷贝（含全角括号与 `｜`）；差一个字符就静默回退，不报错 —— 所以加了 `tools/check_aul2.py`，直接从 `src/ProxyLayer.cpp` 解析 `FILTER_ITEM_*` 与 `FILTER_PLUGIN_TABLE`，CI 里跑覆盖率检查。
+- **绝不能翻译插件名 `ProxyLayer`**：`FILTER_PLUGIN_TABLE::name` 是 `create_effect()` / `get_effect_name()` 的标识，源码里有 9 处 `wcscmp(..., L"ProxyLayer")`，一旦被改写，全工程转换、OFF 还原、跨图层保护、`EnsureDisplayName` 会一起失效。可翻译的是 `label`（`代理图层`）。
+- `.aul2` 覆盖不到宿主看不到键的东西：`register_edit_menu()` / `register_config_menu()` 注册的菜单项、自绘设置窗口 `PanelWndProc` 的文本、日志。它们要走 `InitializeConfig()` + `CONFIG_HANDLE::translate()`（`config2.h`），配合 `EVENT_TYPE::RELOAD_LANGUAGE`（`plugin2.h`，v2.1.17 起）在切换语言后刷新；这一步需要重编 DLL。
+
+词条清单、硬规则与「新增一门语言」的完整流程见 [`LOCALIZATION.md`](LOCALIZATION.md)。

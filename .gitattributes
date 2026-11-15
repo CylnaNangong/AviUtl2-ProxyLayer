@@ -1,0 +1,12 @@
+# AviUtl2 reads .aul2 as UTF-8 text; the official samples use CRLF, so keep it.
+*.aul2 text eol=crlf
+# Host-side scripts are executed by cmd.exe / Windows PowerShell 5.1.
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+# Everything else (sources, docs, python, shell) stays LF.
+*.cpp  text eol=lf
+*.h    text eol=lf
+*.py   text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf

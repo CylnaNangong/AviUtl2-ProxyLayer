@@ -1,0 +1,27 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# AviUtl2 language packs: UTF-8 (no BOM) + CRLF, like the official samples.
+[*.aul2]
+end_of_line = crlf
+insert_final_newline = true
+
+# Windows scripts: CRLF so cmd.exe and Windows PowerShell 5.1 are happy.
+[*.bat]
+end_of_line = crlf
+indent_style = none
+[*.ps1]
+end_of_line = crlf
+
+[*.yml]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
