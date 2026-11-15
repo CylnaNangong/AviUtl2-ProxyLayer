@@ -218,68 +218,64 @@ static void PerfLogLine(const char* line) {
 // Effect settings
 //------------------------------------------------------------------------------
 static auto separator = FILTER_ITEM_SEPARATOR(
-    L"ProxyLayer 代理图层 | 请在下方可选「画像ファイル」指定素材（替换原图像输入），不是叠加在画像ファイル之后");
+    L"ProxyLayer | Pick the source image in \"Image File\" below. This REPLACES the object image input; it is not an overlay on an image file.");
 
 static auto item_file = FILTER_ITEM_FILE(
     L"画像ファイル", L"",
     L"Image (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff)\0"
     L"*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff\0");
 
-// Numeric tracks (not SELECT) so an automated parameter sweep can set them
-// directly in the .aup2 without any label<->value mapping ambiguity.
-//   0 L0 baseline / 1 Variant A / 2 Variant A' / 3 Variant B / 4 control
-// DEFAULT = 3 (production variant). v0.1 shipped with 0 (a pure pass-through)
-// which meant the plugin appeared to do nothing when simply dropped on a layer.
-// NOTE: a "mode 5 = upload only once" experiment was tested and REMOVED:
-// the host rebuilds the object image every frame, so frames 2+ render blank.
-// See report #5 section 10 for the A/B that ruled this path out.
-static auto item_mode  = FILTER_ITEM_TRACK(L"モード", 3, 0, 4, 1.0, L"原图直通");
+// The production render path is FIXED since v0.3. Early builds exposed an
+// experimental 「モード」 track (L0 / draw_image / draw_poly / uncompensated
+// control) purely for A/B measurements; only set_image_data() + relative scale
+// survived (docs/TECHNICAL.md section 8). Shipping dead variants only confused
+// users, so the item was removed and mode is now a compile-time constant.
 //   0 = AUTO by source/scene pixel ratio, 1 = 1/2, 2 = 1/4, 3 = 1/8,
 //   4 = 1/16, 5 = 1/32 (preview-only; export gate always restores L0).
 // AUTO caps at 1/8, which already yields a proxy SMALLER than the screen for
 // 40 MPx sources. Levels 4/5 are manual escape hatches for users who want to
 // trade even more preview sharpness for throughput.
 // zero_display is an official SDK field: value 0 shows "AUTO" on the slider.
-static auto item_level = FILTER_ITEM_TRACK(L"档位",  0, 0, 5, 1.0, L"AUTO");
+static auto item_level = FILTER_ITEM_TRACK(L"プロキシ倍率",  0, 0, 5, 1.0, L"AUTO");
 
-static auto item_force_l0 = FILTER_ITEM_CHECK(L"导出时强制原图", true);
-static auto item_probe    = FILTER_ITEM_CHECK(L"输出探针日志", true);
+static auto item_force_l0 = FILTER_ITEM_CHECK(L"出力時は元画像を強制", true);
+static auto item_probe    = FILTER_ITEM_CHECK(L"プローブログを出力", true);
 // Visible proof that the proxy is really being used: paints a thin magenta bar
 // along the top edge of the proxy texture. OFF by default (never pollutes a
 // real render); turn it on once to confirm the plugin is live.
-static auto item_mark     = FILTER_ITEM_CHECK(L"显示代理标记", false);
+static auto item_mark     = FILTER_ITEM_CHECK(L"プロキシマーカーを表示", false);
 // SELF-TEST ONLY: lets the harness exercise the SAVE branch without a real
 // encoder. Default off; never enable in a shipping build / user project.
-static auto item_sim_save = FILTER_ITEM_CHECK(L"模拟导出态", false);
+static auto item_sim_save = FILTER_ITEM_CHECK(L"出力状態をシミュレート", false);
 // Per-layer escape hatch: keep the ORIGINAL image for this one object. Useful
 // when a manually-added ProxyLayer sits in front of a size-dependent script.
 // FallbackL0 calls set_image_data(..., W, H), so obj.w/obj.h stay untouched.
-static auto item_keep_original = FILTER_ITEM_CHECK(L"本图层保持原图", false);
+static auto item_keep_original = FILTER_ITEM_CHECK(L"このレイヤーは元画像を維持", false);
 // NOTE: the experimental 「补偿 obj.w/h」 item was REMOVED. Writing back
 // OBJECT_INFO::width/height was DISPROVED by a real Lua probe: the host feeds
 // Lua from the current texture size, not from OBJECT_INFO (2048 -> 1024).
 // Size compensation now lives in the OPTIONAL same-name luaJIT.dll proxy
 // (ProxyLayer_MapSize + a lua_setfield wrapper), and scripts can always read
-// 「原始宽」/「原始高」 via obj.getvalue().
+// 「元の幅」/「元の高さ」 via obj.getvalue().
 
 // Compensation data for DOWNSTREAM filters/scripts.
 // set_image_data() shrinks the object image, so obj.w/obj.h become 1/div of
 // the source and are ReadOnly from Lua. Two supported ways out:
-//   - scripts read 「原始宽」/「原始高」 via obj.getvalue() and scale themselves;
+//   - scripts read 「元の幅」/「元の高さ」 via obj.getvalue() and scale themselves;
 //   - the OPTIONAL same-name luaJIT.dll proxy maps obj.w/h back transparently
 //     (ProxyLayer_MapSize + a lua_setfield wrapper, see src/ProxyLuaJIT.cpp).
 // Writing OBJECT_INFO::width/height does NOT work (disproved); that path was
 // removed. Both values are written once, at conversion time, from the host's
 // own image cache.
-static auto item_src_w = FILTER_ITEM_TRACK(L"原始宽", 0, 0, 65536, 1.0, L"未设置");
-static auto item_src_h = FILTER_ITEM_TRACK(L"原始高", 0, 0, 65536, 1.0, L"未设置");
+static auto item_src_w = FILTER_ITEM_TRACK(L"元の幅", 0, 0, 65536, 1.0, L"未設定");
+static auto item_src_h = FILTER_ITEM_TRACK(L"元の高さ", 0, 0, 65536, 1.0, L"未設定");
 // Remembers what was replaced so the OFF switch restores the EXACT original
 // effect (audio / 3D model / video objects must never become 画像ファイル).
-static auto item_origin_effect = FILTER_ITEM_STRING(L"原始效果名", L"");
-static auto item_origin_item   = FILTER_ITEM_STRING(L"原始文件名项", L"");
+static auto item_origin_effect = FILTER_ITEM_STRING(L"元のエフェクト名", L"");
+static auto item_origin_item   = FILTER_ITEM_STRING(L"元のファイル項目名", L"");
 
 static void* items[] = {
-    &separator, &item_file, &item_mode, &item_level,
+    &separator, &item_file, &item_level,
     &item_force_l0, &item_probe, &item_mark, &item_sim_save,
     &item_keep_original,
     &item_src_w, &item_src_h, &item_origin_effect, &item_origin_item, nullptr
@@ -290,8 +286,8 @@ bool func_proc_video(FILTER_PROC_VIDEO* v);
 static FILTER_PLUGIN_TABLE filter_plugin_table = {
     FILTER_PLUGIN_TABLE::FLAG_VIDEO | FILTER_PLUGIN_TABLE::FLAG_INPUT,
     L"ProxyLayer",
-    L"代理图层",
-    L"ProxyLayer v0.1 — preview proxy layer / 3D-camera alignment A-B probe",
+    L"ProxyLayer",
+    L"ProxyLayer v0.3 - whole-project preview proxy / full-resolution export",
     items,
     func_proc_video,
     nullptr
@@ -339,7 +335,7 @@ static void OnProjectSave(PROJECT_FILE*) {
 // and converts every 画像ファイル effect into ProxyLayer in place, keeping the
 // original file path and the effect order (so 標準描画 and later effects keep
 // working). Disabling it converts them back. No per-layer parameter tuning:
-// mode=3 and 档位=AUTO are already the defaults, and the export gate restores
+// AUTO proxy scale and the export gate are already the defaults, and the export gate restores
 // full resolution automatically.
 //------------------------------------------------------------------------------
 // (g_auto_proxy is declared with the other globals above.)
@@ -499,16 +495,16 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
             e->set_effect_item_value(ne, L"画像ファイル", path.c_str());
             // Remember EXACTLY what was replaced, so OFF restores the original
             // effect instead of blindly turning audio/3D into 画像ファイル.
-            e->set_effect_item_value(ne, L"原始效果名", WideToUtf8(nm).c_str());
-            e->set_effect_item_value(ne, L"原始文件名项", WideToUtf8(usedItem).c_str());
+            e->set_effect_item_value(ne, L"元のエフェクト名", WideToUtf8(nm).c_str());
+            e->set_effect_item_value(ne, L"元のファイル項目名", WideToUtf8(usedItem).c_str());
             // Expose the ORIGINAL image size to downstream filters/scripts.
             int iw = 0, ih = 0;
             if (QueryImageSize(path, &iw, &ih)) {
                 char b[32];
                 _snprintf_s(b, _countof(b), _TRUNCATE, "%d", iw);
-                e->set_effect_item_value(ne, L"原始宽", b);
+                e->set_effect_item_value(ne, L"元の幅", b);
                 _snprintf_s(b, _countof(b), _TRUNCATE, "%d", ih);
-                e->set_effect_item_value(ne, L"原始高", b);
+                e->set_effect_item_value(ne, L"元の高さ", b);
             } else {
                 Log(L"AutoProxy: size query failed; downstream compensation unavailable");
             }
@@ -521,11 +517,11 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
             if (!v || !*v) continue;
             // Copy it BEFORE delete_effect() invalidates the item buffer.
             const std::wstring base = FileBaseNameWide(v);
-            LPCSTR oe = e->get_effect_item_value(list[i], L"原始效果名");
-            LPCSTR oi = e->get_effect_item_value(list[i], L"原始文件名项");
+            LPCSTR oe = e->get_effect_item_value(list[i], L"元のエフェクト名");
+            LPCSTR oi = e->get_effect_item_value(list[i], L"元のファイル項目名");
             // Legacy objects converted before this metadata existed fall back
             // to 画像ファイル; a warning makes that visible in the log.
-            if (!oe || !*oe) Log(L"AutoProxy: legacy proxy without 原始效果名, restoring 画像ファイル");
+            if (!oe || !*oe) Log(L"AutoProxy: legacy proxy without 元のエフェクト名, restoring 画像ファイル");
             const std::wstring effect = (oe && *oe) ? Utf8ToWide(oe) : L"画像ファイル";
             const std::wstring item   = (oi && *oi) ? Utf8ToWide(oi) : L"ファイル";
             EFFECT_HANDLE ne = e->create_effect(o, effect.c_str());
@@ -652,13 +648,13 @@ static int SetKeepOriginal(EDIT_SECTION* e, OBJECT_HANDLE o, bool keep) {
     for (int i = 0; i < n; ++i) {
         LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
         if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
-        LPCSTR cur = e->get_effect_item_value(list[i], L"本图层保持原图");
+        LPCSTR cur = e->get_effect_item_value(list[i], L"このレイヤーは元画像を維持");
         const bool on = cur && (std::strcmp(cur, "1") == 0 ||
                                 std::strcmp(cur, "on") == 0);
         if (on == keep) return 0;
-        if (!e->set_effect_item_value(list[i], L"本图层保持原图",
+        if (!e->set_effect_item_value(list[i], L"このレイヤーは元画像を維持",
                                       keep ? "1" : "0")) return 0;
-        LogF(L"AutoProxy: layer-protect 本图层保持原图=%s", keep ? L"1" : L"0");
+        LogF(L"AutoProxy: layer-protect このレイヤーは元画像を維持=%s", keep ? L"1" : L"0");
         return 1;
     }
     return 0;
@@ -715,7 +711,7 @@ static int SetKeepAll(EDIT_SECTION* e, bool on) {
             for (int i = 0; i < n; ++i) {
                 LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
                 if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
-                e->set_effect_item_value(list[i], L"本图层保持原图", on ? "1" : "0");
+                e->set_effect_item_value(list[i], L"このレイヤーは元画像を維持", on ? "1" : "0");
                 ++changed;
             }
       });
@@ -1053,8 +1049,8 @@ enum : int { IDC_SWITCH = 1001, IDC_OK = 1002, IDC_CANCEL = 1003 };
 // rect, so font size / DPI can never push buttons out of view again.
 static const int kPanelW = 360, kPanelH = 270;
 static HWND g_btn_ok = nullptr, g_btn_cancel = nullptr;
-// Draft state: window edits change ONLY this. 确定 commits to the global
-// preference; 取消 / caption X discards. Menu switches stay immediate.
+// Draft state: window edits change ONLY this. OK commits to the global
+// preference; Cancel / caption X discards. Menu switches stay immediate.
 static std::atomic<bool> g_panel_draft{ false };
 
 static void SetChildFont(HWND h) {
@@ -1071,39 +1067,39 @@ static void UpdatePanelStatus() {
     const bool draft = g_panel_draft.load();
     wchar_t buf[256];
     _snwprintf_s(buf, _countof(buf), _TRUNCATE,
-        L"状态：%s  草稿：%s%s\r\n"
-        L"草稿改动需点「确定」才保存并生效。\r\n"
-        L"整个工程生效（自动遍历全部场景）· AUTO 按场景像素密度选档\r\n"
-        L"导出回原图 · 下游可读「原始宽/高」",
-        cur ? L"已开启" : L"已关闭", draft ? L"开启" : L"关闭",
-        cur == draft ? L"（无改动）" : L"（未保存）");
+        L"Current: %s   Draft: %s%s\r\n"
+        L"Click OK to save the draft globally.\r\n"
+        L"Applies to EVERY scene - AUTO picks the proxy scale by pixel density.\r\n"
+        L"Full-res on export - scripts can read 元の幅/元の高さ",
+        cur ? L"ON" : L"OFF", draft ? L"ON" : L"OFF",
+        cur == draft ? L"" : L"  (unsaved)");
     SetWindowTextW(g_panel_status, buf);
     if (g_panel_check)
         CheckDlgButton(g_panel, IDC_SWITCH, draft ? BST_CHECKED : BST_UNCHECKED);
 }
 static void CommitPanel(HWND h) {
     const bool on = g_panel_draft.load();
-    SaveGlobal(on);                                   // 确定 = save globally
+    SaveGlobal(on);                                   // OK = save globally
     // One click must cover EVERY scene. CommitPanel is a WM_COMMAND handler
     // on the UI thread and owns no edit lock, so ConvertAllScenes() is legal.
     const int n = ConvertAllScenes(on);
     g_watch_dirty.store(true);
-    LogF(L"Panel: 确定 -> saved globally auto-proxy=%s, "
+    LogF(L"Panel: OK -> saved globally auto-proxy=%s, "
          L"whole-project pass changed %d object(s)",
          on ? L"ON" : L"OFF", n);
     UpdatePanelStatus();
     if (h) ShowWindow(h, SW_HIDE);
 }
 static void RevertPanel(HWND h) {
-    g_panel_draft.store(g_auto_proxy.load());        // 取消 = discard
-    Log(L"Panel: 取消 -> not saved");
+    g_panel_draft.store(g_auto_proxy.load());        // Cancel = discard
+    Log(L"Panel: Cancel -> not saved");
     if (h) ShowWindow(h, SW_HIDE);
 }
 static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CREATE: {
         HINSTANCE hi = GetModuleHandleW(nullptr);
-        g_panel_check = CreateWindowExW(0, L"BUTTON", L"自动代理（整个工程·所有场景，长期生效）",
+        g_panel_check = CreateWindowExW(0, L"BUTTON", L"Auto proxy (all scenes, saved globally)",
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 12, 12, 336, 24,
             h, (HMENU)IDC_SWITCH, hi, nullptr);
         HWND sep = CreateWindowExW(0, L"STATIC", L"",
@@ -1112,10 +1108,10 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_panel_status = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 56, 336, 150,
             h, nullptr, hi, nullptr);
-        g_btn_ok = CreateWindowExW(0, L"BUTTON", L"确定",
+        g_btn_ok = CreateWindowExW(0, L"BUTTON", L"OK",
             WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 180, 216, 84, 30,
             h, (HMENU)IDC_OK, hi, nullptr);
-        g_btn_cancel = CreateWindowExW(0, L"BUTTON", L"取消",
+        g_btn_cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 264, 216, 84, 30,
             h, (HMENU)IDC_CANCEL, hi, nullptr);
         SetChildFont(g_panel_check); SetChildFont(sep);
@@ -1150,7 +1146,7 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_COMMAND: {
         const int id = LOWORD(w);
         if (id == IDC_SWITCH) {
-            // Draft only: nothing is applied or saved until 确定.
+            // Draft only: nothing is applied or saved until OK.
             g_panel_draft.store(IsDlgButtonChecked(h, IDC_SWITCH) == BST_CHECKED);
             UpdatePanelStatus();
             return 0;
@@ -1160,7 +1156,7 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_CLOSE:
-        // Caption X behaves like 取消: discard the draft, never destroy the
+        // Caption X behaves like Cancel: discard the draft, never destroy the
         // HWND (the menu must be able to reopen it).
         RevertPanel(h);
         return 0;
@@ -1212,7 +1208,7 @@ static void CreatePanel(HOST_APP_TABLE* host) {
     AdjustWindowRectEx(&rc, style, FALSE, WS_EX_DLGMODALFRAME);
     const int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
     g_panel = CreateWindowExW(WS_EX_DLGMODALFRAME, kPanelClass,
-        L"ProxyLayer 自动代理", style,
+        L"ProxyLayer Auto Proxy", style,
         CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
         g_host_wnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_panel) { Log(L"Panel: CreateWindowExW failed"); return; }
@@ -1254,16 +1250,16 @@ static void PanelTestWorker() {
     const bool shownByToggle = IsWindowVisible(g_panel) != FALSE;
     TogglePanel(L"test");
     const bool hiddenByToggle = IsWindowVisible(g_panel) == FALSE;
-    // 确定 must save globally; 取消 / X must not.
+    // OK must save globally; Cancel / X must not.
     const bool globalBefore = PrefSwitchExists();
     g_panel_draft.store(!globalBefore);
-    RevertPanel(nullptr);                              // 取消
+    RevertPanel(nullptr);                              // Cancel
     const bool cancelKept = (PrefSwitchExists() == globalBefore);
     g_panel_draft.store(!globalBefore);
-    SaveGlobal(g_panel_draft.load());                   // 确定
+    SaveGlobal(g_panel_draft.load());                   // OK
     const bool okWrote = (PrefSwitchExists() == g_panel_draft.load());
     WritePrefSwitch(globalBefore); g_auto_proxy.store(globalBefore);
-    // Real 确定 button click: saves globally, applies, and closes.
+    // Real OK button click: saves globally, applies, and closes.
     ShowWindow(g_panel, SW_SHOW);
     g_panel_draft.store(g_auto_proxy.load());
     SendMessageW(g_panel, WM_COMMAND, MAKEWPARAM(IDC_OK, BN_CLICKED), 0);
@@ -1300,8 +1296,8 @@ static void SafetyCheckThunk(void* p, EDIT_SECTION* e) {
             LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
             if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
             ++a->proxies;
-            LPCSTR w = e->get_effect_item_value(list[i], L"原始宽");
-            LPCSTR h = e->get_effect_item_value(list[i], L"原始高");
+            LPCSTR w = e->get_effect_item_value(list[i], L"元の幅");
+            LPCSTR h = e->get_effect_item_value(list[i], L"元の高さ");
             if (w && *w) a->srcW = std::atoi(w);
             if (h && *h) a->srcH = std::atoi(h);
         }
@@ -1337,7 +1333,7 @@ static void SafetyTestWorker() {
     if (g_edit && g_edit->call_edit_section_param)
         CallEditSection(&a, &SafetyCheckThunk);
     const bool compOk = (a.proxies > 0 && a.srcW > 0 && a.srcH > 0);
-    LogF(L"Safety[test]: names %d/%d paths %d/%d proxies=%d 原始宽=%d 原始高=%d",
+    LogF(L"Safety[test]: names %d/%d paths %d/%d proxies=%d 元の幅=%d 元の高さ=%d",
          nOk, nTotal, pOk, pTotal, a.proxies, a.srcW, a.srcH);
     LogF(L"Safety[test]: VERDICT=%s",
          (nOk == nTotal && pOk == pTotal && compOk) ? L"PASS" : L"FAIL");
@@ -1414,15 +1410,15 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host) {
     // One switch for the whole scene: available from both the 編集 menu and
     // the object right-click menu. '\' creates a submenu.
     if (host->register_edit_menu) {
-        host->register_edit_menu(L"代理图层\\整个工程自动代理 (开/关)", &OnMenuAutoProxy);
-        host->register_edit_menu(L"代理图层\\设置窗口 (显示/隐藏)", &OnMenuPanel);
-        host->register_edit_menu(L"代理图层\\全部图层保持原图 (脚本兼容)", &OnMenuKeepAll);
-        host->register_edit_menu(L"代理图层\\恢复全部代理", &OnMenuRestoreAll);
+        host->register_edit_menu(L"ProxyLayer\\Auto Proxy (All Scenes) ON/OFF", &OnMenuAutoProxy);
+        host->register_edit_menu(L"ProxyLayer\\Settings Window (Show/Hide)", &OnMenuPanel);
+        host->register_edit_menu(L"ProxyLayer\\Keep All Layers Full-Res (Script Compat)", &OnMenuKeepAll);
+        host->register_edit_menu(L"ProxyLayer\\Restore All Proxies", &OnMenuRestoreAll);
     }
     if (host->register_object_menu)
-        host->register_object_menu(L"代理图层\\整个工程自动代理 (开/关)", &OnMenuAutoProxy);
+        host->register_object_menu(L"ProxyLayer\\Auto Proxy (All Scenes) ON/OFF", &OnMenuAutoProxy);
     if (host->register_config_menu)
-        host->register_config_menu(L"ProxyLayer 自动代理", &OnConfigMenu);
+        host->register_config_menu(L"ProxyLayer Auto Proxy", &OnConfigMenu);
     const bool lifecycleTest = AutoTestMarkerExists();
     const bool panelTest = PanelTestMarkerExists();
     const bool safetyTest = SafetyTestMarkerExists();
@@ -1574,7 +1570,6 @@ struct ProxyEntry {
     std::vector<PIXEL_RGBA> pm;   // premultiplied, for set_image_data()
     std::wstring png_path;        // for "image:" VRAM-cached resource
     bool png_ready = false;
-    bool texture_logged = false;
     bool marked = false;
 };
 static std::unordered_map<std::wstring, ProxyEntry> g_proxies;
@@ -1670,8 +1665,8 @@ static std::wstring CacheDir() {
         }
         LogF(L"CacheDir rejected: %s err=%u", c.c_str(), err);
     }
-    Log(L"CacheDir: no writable dir; using in-memory resource: textures");
-    return L"";                        // EnsureTextures() falls back gracefully
+    Log(L"CacheDir: no writable dir; proxies stay in memory only");
+    return L"";                        // GetProxy() then skips the on-disk PNG
 }
 
 static std::wstring MakeKey(const std::wstring& file, int div, int w, int h,
@@ -1774,31 +1769,6 @@ static ProxyEntry* GetProxy(const std::wstring& file, int div,
     return &res.first->second;
 }
 
-// Returns drawable resource names in priority order.
-// Preferred : "image:<path>" — host keeps it VRAM-resident across frames, so
-//             zero per-frame upload. (SDK filter2.h: ※画像はVRAMにキャッシュ)
-// Fallback  : "resource:ProxyLayer_<hash>" — destroyed after filter processing
-//             (SDK: ※フィルタ処理後に破棄されます), so it must be recreated
-//             each frame from the cross-frame main-memory CACHE_HANDLE proxy.
-//             The name is content-addressed: multiple layers with different
-//             div/size no longer clobber a single shared texture.
-static std::vector<std::wstring> EnsureTextures(FILTER_PROC_VIDEO* v, ProxyEntry& e) {
-    std::vector<std::wstring> out;
-    if (e.png_ready) out.push_back(L"image:" + e.png_path);
-    if (v->create_image_resource) {
-        const std::wstring name = L"resource:ProxyLayer_" + e.key;
-        v->create_image_resource(name.c_str(), e.pm.data(), e.pw, e.ph);
-        out.push_back(name);
-    }
-    if (!e.texture_logged) {
-        e.texture_logged = true;
-        LogF(L"texture key=%s primary=%s (%dx%d)",
-             e.key.c_str(), e.png_ready ? L"image: VRAM-cached" : L"resource: per-frame",
-             e.pw, e.ph);
-    }
-    return out;
-}
-
 // Safe fallback for every proxy failure: reproduce the original full-res image
 // rather than returning false with nothing drawn (which yields a blank object).
 static bool FallbackL0(FILTER_PROC_VIDEO* v, const SourceView& src, const wchar_t* why) {
@@ -1835,54 +1805,14 @@ static bool LazyL0(FILTER_PROC_VIDEO* v, const SourceView& src,
     return FallbackL0(v, real, why);
 }
 
-// Shared drawing code for both the cached (no original decode) and first-frame
-// (decode + build) paths. `src` may have data == nullptr in the cached path.
-static bool DrawProxy(FILTER_PROC_VIDEO* v, ProxyEntry& px, int div,
-                      int W, int H, int mode,
-                      const SourceView& src, const std::wstring& file) {
-    if (mode == 1) {
-        const std::vector<std::wstring> textures = EnsureTextures(v, px);
-        for (const auto& res : textures) {
-            if (!v->draw_image(res.c_str(), 0, 0, 0, 0, 0, 0,
-                               (float)div, (float)div, 1.f, 1.f)) {
-                LogF(L"draw_image rejected %s; trying next texture", res.c_str());
-                continue;
-            }
-            v->set_default_anchor(W, H);
-            return false;
-        }
-        return LazyL0(v, src, file, L"all proxy textures rejected; falling back to L0");
-    }
-    if (mode == 2) {
-        const std::vector<std::wstring> textures = EnsureTextures(v, px);
-        const float hw = (float)W * 0.5f, hh = (float)H * 0.5f;
-        VERTEX_TEXTURE vtx[4] = {
-            { -hw, -hh, 0.f, 0.f, 0.f, 1.f },
-            {  hw, -hh, 0.f, 1.f, 0.f, 1.f },
-            {  hw,  hh, 0.f, 1.f, 1.f, 1.f },
-            { -hw,  hh, 0.f, 0.f, 1.f, 1.f },
-        };
-        for (const auto& res : textures) {
-            if (!v->draw_poly(VERTEX_TYPE::QUAD_TEXTURE, vtx, 4, res.c_str())) {
-                LogF(L"draw_poly rejected %s; trying next texture", res.c_str());
-                continue;
-            }
-            v->set_default_anchor(W, H);
-            return false;
-        }
-        return LazyL0(v, src, file, L"all proxy textures rejected; falling back to L0");
-    }
-    if (mode == 3) {
-        v->set_image_data(px.pm.data(), px.pw, px.ph);
-        // param is a RELATIVE setting (same as obj.ox / obj.sx).
-        v->param->sx *= (float)div;
-        v->param->sy *= (float)div;
-        return true;
-    }
-    if (mode == 4) {
-        v->set_image_data(px.pm.data(), px.pw, px.ph);
-        return true;   // NO compensation -> deliberate 1/div misalignment
-    }
+// Production path: upload the 1/div proxy texture, then scale the object's
+// relative draw size back up. Geometry, camera and the whole downstream
+// effect chain therefore stay identical to the original full-res image.
+static bool DrawProxy(FILTER_PROC_VIDEO* v, ProxyEntry& px, int div) {
+    v->set_image_data(px.pm.data(), px.pw, px.ph);
+    // param is a RELATIVE setting (same as obj.ox / obj.sx).
+    v->param->sx *= (float)div;
+    v->param->sy *= (float)div;
     return true;
 }
 
@@ -2010,7 +1940,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
     }
     const bool saving = (state == EDIT_HANDLE::EDIT_STATE_SAVE) || item_sim_save.value;
 
-    int mode = (int)item_mode.value;
+    constexpr int mode = 3;   // fixed production path, see Effect settings
     const int level = std::min(5, std::max(0, (int)item_level.value));
     int div = (level == 0) ? 0 : (1 << level);   // 0 = AUTO unresolved
     const bool auto_level = (level == 0);
@@ -2023,7 +1953,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
         if (item_probe.value && gate_logged.fetch_add(1) < 3)
             LogF(L"EXPORT GATE fired state=%d sim=%d mode %d div=%d -> L0 (div=1)",
                  state, (int)item_sim_save.value, mode, div);
-        mode = 0; div = 1; gated = true;
+        div = 1; gated = true;
     }
 
     const std::wstring file = item_file.value ? item_file.value : L"";
@@ -2053,7 +1983,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
     }
     if (auto_level && !gated && haveDims)
         div = AutoDiv(dims.w, dims.h, scene_w, scene_h);
-    const bool wantL0 = gated || item_keep_original.value || mode == 0 || div == 1;
+    const bool wantL0 = gated || item_keep_original.value || div == 1;
 
     // ---- FAST PATH: proxy already built -> never decode the original ------
     ProxyEntry* px = nullptr;
@@ -2084,12 +2014,12 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
         Probe(v, mode, div, state, W, H);
         if (item_keep_original.value)
             return LazyL0(v, src, file, L"layer opted out, original size preserved");
-        if (mode == 0 || div == 1)
+        if (div == 1)
             return LazyL0(v, src, file, nullptr);
         if (!px || px->pm.empty())
             return LazyL0(v, src, file, L"proxy build failed; falling back to L0");
         if (div > 1) RegisterSizeMap(px->pw, px->ph, W, H);
-        return DrawProxy(v, *px, div, W, H, mode, src, file);
+        return DrawProxy(v, *px, div);
     };
 
     if (px) {

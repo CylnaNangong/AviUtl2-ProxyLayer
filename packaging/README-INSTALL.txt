@@ -1,6 +1,7 @@
-[ ProxyLayer インストールパッケージ / 一键安装包 / Installer ]
+﻿[ ProxyLayer インストールパッケージ / 一键安装包 / Installer ]
 
 【日本語】
+  ※ v0.3: 内部キー名は日本語に統一。日本語環境では表示パック不要です。
 
 ■ このパッケージの中身
   install.bat                    ダブルクリックでインストール（推奨）
@@ -8,7 +9,6 @@
   install.ps1                    実処理（パラメータは下記）
   package.txt                    パッケージ情報（日 / 中 / 英）
   Plugin/ProxyLayer.aux2         本体プラグイン
-  Language/日本語.ProxyLayer.aul2      UI 表示パック（日本語）
   Language/简体中文.ProxyLayer.aul2    UI 表示パック（簡体字中国語）
   Language/English.ProxyLayer.aul2     UI 表示パック（英語）
   LuaProxy/luaJIT.dll            オプションの luaJIT 同名転送プロキシ（実験的）
@@ -18,7 +18,7 @@
   2. install.bat をダブルクリックします。
   3. [OK] が表示されたら AviUtl2 を再起動します。
   4. 「編集」メニュー →「代理图层」→「整个工程自动代理 (开/关)」でスイッチを入れます。
-  5. 日本語 UI にしたい場合は「設定」→「言語の設定」で 日本語 を選びます。
+  5. 内部キーは日本語です。日本語 UI では表示パック不要（Default 言語のまま）。
 
 ■ スクリプトが自動で行うこと
   - aviutl2.exe の自動検出：実行中のホスト → 近くのフォルダ → 一般的なインストール先
@@ -70,7 +70,6 @@
   install.ps1                    实际安装逻辑（参数见下）
   package.txt                    包信息（日 / 中 / 英）
   Plugin/ProxyLayer.aux2         主插件
-  Language/日本語.ProxyLayer.aul2       界面显示包（日语）
   Language/简体中文.ProxyLayer.aul2     界面显示包（简体中文）
   Language/English.ProxyLayer.aul2      界面显示包（英语）
   LuaProxy/luaJIT.dll            可选的 luaJIT 同名转发代理（实验组件）
@@ -128,7 +127,7 @@
   install.ps1                    the actual logic (parameters below)
   package.txt                    package information (ja / zh / en)
   Plugin/ProxyLayer.aux2         main plugin
-  Language/*.ProxyLayer.aul2     UI display packs (Japanese, Simplified Chinese, English)
+  Language/*.ProxyLayer.aul2     UI display packs (Simplified Chinese, English)
   LuaProxy/luaJIT.dll            optional same-name luaJIT forwarding proxy (experimental)
 
 ■ How to install

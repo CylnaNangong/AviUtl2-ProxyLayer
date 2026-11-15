@@ -1,15 +1,15 @@
 <div align="center">
 
-# ProxyLayer / Proxy Layer / 代理图层
+# ProxyLayer
 
 **A native "preview proxy layer" plugin for AviUtl ExEdit2.**  
 Flip one switch and every large still image in the whole project is swapped for a downscaled proxy, so playback becomes smooth immediately. **Exports always restore the original image**, so the delivered video is bit-for-bit unaffected. After conversion the timeline still shows the source file name, so it feels exactly like the built-in “Image File” object.
 
-`ProxyLayer.aux2 v0.2.1` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.0` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 Language:** &nbsp; **[简体中文 (Chinese)](../README.md)** &nbsp;|&nbsp; **[日本語 (Japanese)](README_ja.md)** &nbsp;|&nbsp; **English**
 
-*(Three UI display packs ship with the plugin: `Language/日本語.ProxyLayer.aul2`, `Language/简体中文.ProxyLayer.aul2`, `Language/English.ProxyLayer.aul2`)*
+*(Two display packs ship: `Language/简体中文.ProxyLayer.aul2` and `Language/English.ProxyLayer.aul2`; Japanese is the host default)*
 
 <sub>Note: the Japanese and English documents are translations; the Chinese README is authoritative if they ever disagree.</sub>
 
@@ -34,10 +34,10 @@ The proxy level is derived from `sqrt(source pixels / scene pixels)`, rounded up
 - **Cross-layer sampling protection**: when volumetric light, volumetric fog, 3D bridge or similar scripts read another layer's pixels, the sampled layer automatically stays at full resolution (prevents "the light beam only lights the middle").
 - **No duplicate source decoding**: once a proxy hits, the 40 MPx original is no longer requested from the host (measured: 95.6 ms per decode, 97% fast-path hit rate).
 - **Timeline keeps the source file name**: no wall of `ProxyLayer` entries; turning the switch OFF restores the standard name too.
-- **Original size metadata**: downstream scripts can read `obj.getvalue("ProxyLayer","原始宽"/"原始高")` and compensate themselves.
+- **Original size metadata**: downstream scripts can read `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")` and compensate themselves.
 - **Strict allowlist**: only still-image inputs (`画像ファイル` etc.) and image extensions are converted; audio, video, OBJ, VRM and 3D models are never touched.
 - **Global switch + settings window**: "OK" saves, "Cancel" discards; the state survives project changes and restarts.
-- **Three-language UI display packs**: `Language/*.ProxyLayer.aul2` provide Japanese / Simplified Chinese / English parameter labels and hints. **No DLL rebuild needed**, and the keys stored inside projects never change.
+- **Japanese internal keys + two display packs**: `.aup2` keys use the host default language; Japanese users need no pack, Chinese/English users get translated labels only.
 - **Optional experimental component**: a same-name `luaJIT.dll` forwarding proxy that maps `obj.w/obj.h` back to the original size (see `src/ProxyLuaJIT.cpp`, not installed by default).
 
 ## Installation
@@ -78,35 +78,32 @@ Softer preview quality is by design; exports always use the original image.
 
 ## UI languages (localization)
 
-The plugin's parameter names are compiled in (a Japanese/Chinese mix: `画像ファイル` next to `档位`). AviUtl2's official `.aul2` mechanism overrides the **displayed names**:
+Since **v0.3.0 all internal item keys are Japanese** (the AviUtl2 default language, `Default`), matching the convention used by community plugins. The plugin label, menu entries and settings window use English `ProxyLayer` everywhere.
 
-| File | Effect |
+| Host language | What you see | What to install |
+| --- | --- | --- |
+| `Default` (Japanese, host default) | Japanese parameter names | **Nothing** |
+| `简体中文` | Chinese names | `Language/简体中文.ProxyLayer.aul2` |
+| `English` | English names | `Language/English.ProxyLayer.aul2` |
+
+`.aul2` packs replace **displayed text only**; `.aup2` storage keys never change. The filename prefix must match the host language setting exactly: real installations only have `Default.*`, `简体中文.*`, `English.*`, `Deutsch.*` and `community_*`. There is **no「日本語」language** — `Default` IS Japanese.
+
+> ⚠️ **v0.3.0 is a breaking change**: projects saved with v0.2.x contain old Chinese keys. Restore them with OFF (or re-run auto proxy) before upgrading. See [CHANGELOG.md](../CHANGELOG.md).
+
+`tools/check_aul2.py` parses `src/ProxyLayer.cpp` in CI and validates both packs (12 keys each). Menus and the custom settings window are not covered by `.aul2`, which is why they are plain English.
+
+Full key inventory: [`LOCALIZATION.md`](LOCALIZATION.md).
+
+| Item (internal key / Japanese) | Meaning |
 | --- | --- |
-| `Language/日本語.ProxyLayer.aul2` | Chinese parameter names (档位 / 导出时强制原图 / …) shown in Japanese; effect label becomes「プロキシレイヤー」 |
-| `Language/简体中文.ProxyLayer.aul2` | Remaining Japanese items (`モード` / `画像ファイル`) shown in Chinese |
-| `Language/English.ProxyLayer.aul2` | All parameter names in English |
+| `画像ファイル` | Source image path (written at conversion) |
+| `プロキシ倍率` | AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32 |
+| `出力時は元画像を強制` | Export gate, on by default |
+| `このレイヤーは元画像を維持` | Per-layer escape hatch, set automatically for cross-layer sampled layers |
+| `元の幅` / `元の高さ` / `元のエフェクト名` / `元のファイル項目名` | Metadata for restore and downstream compensation |
+| `プローブログを出力` / `プロキシマーカーを表示` / `出力状態をシミュレート` | Diagnostics / self-test switches |
 
-Design rules (read before editing a language pack):
-
-- Language packs replace **displayed text only**. Internal keys (`画像ファイル`, `档位`, `原始宽`, …) and everything stored in `.aup2` projects stay unchanged, so **existing projects never break**.
-- The section name must be the plugin file name, `[ProxyLayer]`, and every key must match the source string byte for byte.
-- **Do not translate the plugin name `ProxyLayer` itself**: the plugin identifies its own effects with `wcscmp(name, L"ProxyLayer")`, so renaming it breaks whole-project conversion and restore. Translating the display label `代理图层` is fine.
-- The host menu entries (`代理图层\整个工程自动代理`) and the settings-window text are written by C++ at registration time and cannot be overridden by `.aul2`. The route for those (`InitializeConfig` + `CONFIG_HANDLE::translate` + the `RELOAD_LANGUAGE` event) is documented in [`LOCALIZATION.md`](LOCALIZATION.md) and requires a DLL rebuild.
-
-The full key inventory and "how to add a new language" steps are in [`LOCALIZATION.md`](LOCALIZATION.md) (Chinese).
-
-## Parameters
-
-| Item | Description |
-| --- | --- |
-| `画像ファイル` | Source image path (written automatically on conversion) |
-| `モード` | 3 = production mode (`set_image_data` + scale compensation; keeps the downstream effect chain and camera intact) |
-| `档位` | AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32 |
-| `导出时强制原图` | On by default; the export gate |
-| `本图层保持原图` | Per-layer escape hatch; set to 1 automatically when the layer is sampled by others |
-| `原始宽` / `原始高` / `原始效果名` / `原始文件名项` | Metadata written on conversion; used for restore and downstream compensation |
-
-> `补偿 obj.w/h (experimental)` was **removed in v0.2.1**: writing back the native `OBJECT_INFO::width/height` was disproved by a Lua probe (the host feeds Lua from the current texture size, 2048 → 1024 stays), so it was dead code. The correct route is the **optional `luaJIT.dll` forwarding proxy** (maps `obj.w/h` back to the original size; scripts such as OpenGlow and 光束_H depend on it, so keep it), or letting scripts read `obj.getvalue("ProxyLayer","原始宽"/"原始高")`.
+> The experimental `モード` track was **removed in v0.3.0**: modes 0/1/2/4 were A/B measurement variants; the production path is now a compile-time constant. Size compensation is provided by the optional `luaJIT.dll` forwarding proxy (scripts such as OpenGlow / 光束_H depend on it — keep it), or by reading `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")`.
 
 ## How it works (short version)
 
@@ -122,11 +119,11 @@ Measured data and war stories: [`TECHNICAL.md`](TECHNICAL.md); maintainer-orient
 
 ## Known limitations
 
-- The AviUtl2 SDK cannot keep `obj.w/obj.h` unchanged while a proxy texture is used (measured 2048 → 1024 on the Lua side). **The optional `luaJIT.dll` forwarding proxy maps it back to the original size** (A/B measured 1024 → 2048); scripts like OpenGlow / 光束_H that compute their range from `obj.w/h` depend on it, so it cannot be dropped. Scripts may also read `原始宽/原始高`. The proxy cannot help with **buffer-size** reads such as `getpixeldata()`; that is what cross-layer sampling protection is for.
+- The AviUtl2 SDK cannot keep `obj.w/obj.h` unchanged while a proxy texture is used (measured 2048 → 1024 on the Lua side). **The optional `luaJIT.dll` forwarding proxy maps it back to the original size** (A/B measured 1024 → 2048); scripts like OpenGlow / 光束_H that compute their range from `obj.w/h` depend on it, so it cannot be dropped. Scripts may also read `元の幅/元の高さ`. The proxy cannot help with **buffer-size** reads such as `getpixeldata()`; that is what cross-layer sampling protection is for.
 - Layers sampled by other layers stay at full resolution and therefore gain no speedup.
 - Still images only; previews look softer than the original, exports are unaffected.
 - The first playback builds caches.
-- The plugin's menu entries and settings-window text are still compile-time strings (Japanese/Chinese mix); `.aul2` only covers the effect name and parameter names. Full localization needs a rebuild.
+- Menu entries and settings-window text are compile-time English strings; `.aul2` only covers the effect name and parameter names.
 - Some third-party Rust/Egui plugins panic when the host exits; unrelated to this plugin.
 
 ## Building
@@ -161,9 +158,9 @@ The workflow lives in `.github/workflows/release.yml`. **Pushing one `v*` tag is
 
 ```bash
 # 1. Build locally and commit the fresh dist/ProxyLayer.aux2
-git add dist/ && git commit -m "build: refresh binaries for v0.2.1"
+git add dist/ && git commit -m "build: refresh binaries for v0.3.1"
 # 2. Tag and push; CI creates the Release, packages and uploads the assets
-git tag v0.2.1 && git push origin main && git push origin v0.2.1
+git tag v0.3.1 && git push origin main && git push origin v0.3.1
 ```
 
 CI checks out the tag, runs `packaging/build_release.py --tag <tag>` to build both zips (including `Plugin/` and `Language/`), publishes them with `gh release create` (if needed) and `gh release upload --clobber`, and lists SHA-256 digests in the workflow summary. Publishing a Release in the web UI first, or re-running via `workflow_dispatch` with a tag, both work.
@@ -173,7 +170,7 @@ CI checks out the tag, runs `packaging/build_release.py --tag <tag>` to build bo
 Preview the packaging output locally:
 
 ```bash
-python3 packaging/build_release.py --tag v0.2.1 --out-dir dist
+python3 packaging/build_release.py --tag v0.3.0 --out-dir dist
 ```
 
 ## Updates and compatibility (does the DLL need a rebuild?)
@@ -205,7 +202,7 @@ src/ProxyLayer.cpp      main plugin
 src/ProxyLuaJIT.cpp     optional: same-name luaJIT.dll forwarding proxy (experimental)
 src/png_writer.h        dependency-free RGBA8 PNG encoder
 src/ExportProbe.cpp     test-only: drives a real export through the official output_file()
-Language/*.aul2         three UI display packs (Japanese / Simplified Chinese / English)
+Language/*.aul2         Chinese / English display packs (Japanese is the host default)
 build_*.sh              build scripts
 tools/gen_luaproxy_def.py  generates the 322 PE forwarders from the luaJIT.dll export table
 tools/dump_stack.py     stdlib-only minidump analyzer (exceptions/stacks/module histogram)

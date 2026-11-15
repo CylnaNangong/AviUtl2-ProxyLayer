@@ -93,11 +93,14 @@ select_scene(original) 还原用户所在场景
 
 ## 9. 本地化与显示文本（`.aul2`）
 
-插件是原生 DLL，参数名编译在 `FILTER_ITEM_*` 里，理论上一改就要重编。AviUtl2 的官方语言机制提供了另一条路：宿主按当前语言文件的 section（= 插件文件名 `ProxyLayer`）替换**显示文本**，`.aup2` 里保存的键名不变。
+**v0.3 起内部键名统一为日语**（AviUtl2 默认语言 `Default`）。这是与参考仓库 VolumetricLight3D 一致的社区惯例：插件编译进去的 `FILTER_ITEM_*` 名字就是宿主默认语言，其他语言靠 `.aul2` 差异包把显示名翻过去。
 
-- 于是本地化变成纯数据工作：`Language/{日本語,简体中文,English}.ProxyLayer.aul2`，无需重编 `dist/ProxyLayer.aux2`，旧工程零风险。
-- 键必须是源码字符串的逐字拷贝（含全角括号与 `｜`）；差一个字符就静默回退，不报错 —— 所以加了 `tools/check_aul2.py`，直接从 `src/ProxyLayer.cpp` 解析 `FILTER_ITEM_*` 与 `FILTER_PLUGIN_TABLE`，CI 里跑覆盖率检查。
-- **绝不能翻译插件名 `ProxyLayer`**：`FILTER_PLUGIN_TABLE::name` 是 `create_effect()` / `get_effect_name()` 的标识，源码里有 9 处 `wcscmp(..., L"ProxyLayer")`，一旦被改写，全工程转换、OFF 还原、跨图层保护、`EnsureDisplayName` 会一起失效。可翻译的是 `label`（`代理图层`）。
-- `.aul2` 覆盖不到宿主看不到键的东西：`register_edit_menu()` / `register_config_menu()` 注册的菜单项、自绘设置窗口 `PanelWndProc` 的文本、日志。它们要走 `InitializeConfig()` + `CONFIG_HANDLE::translate()`（`config2.h`），配合 `EVENT_TYPE::RELOAD_LANGUAGE`（`plugin2.h`，v2.1.17 起）在切换语言后刷新；这一步需要重编 DLL。
+- 宿主按当前语言加载 `Language/<语言名>.*.aul2` 差异文件；真机语言列表只有 `Default` / `简体中文` / `English` / `Deutsch` / `community_*`，**没有「日本語」** —— `Default` 就是日语，且只读取 `Default.*.aul2`。官方规则写在宿主自带 `简体中文.aul2` 的头部注释里。
+- 因此只需两个显示包：`简体中文.ProxyLayer.aul2`、`English.ProxyLayer.aul2`。默认日语用户零配置。
+- **实测**（隔离沙箱，三轮）：`日本語.ProxyLayer.aul2` 放在 `Language=`（Default）下完全不生效，参数仍显示旧中文；同一文件改名 `Default.ProxyLayer.aul2` 后 `档位→プロキシ倍率` 等全部生效；三包并存且 `Language=简体中文` 时中文包生效、不被 Default 日文包污染。这促成了"直接把内部键改成日语、不再需要日文包"的决定。
+- `.aul2` 只改**显示**，不改 `.aup2` 存储键。键必须是源码字符串的逐字拷贝；差一个字符静默回退，所以 `tools/check_aul2.py` 从 `src/ProxyLayer.cpp` 解析词条并在 CI 校验覆盖率（当前 12 键 × 2 包）。
+- **绝不翻译内部名 `ProxyLayer`**：`create_effect()` / `get_effect_name()` 以及 9 处 `wcscmp(..., L"ProxyLayer")` 依赖它。插件的显示标签、菜单与设置窗口文案统一用英语 `ProxyLayer`，所有语言下相同 —— `.aul2` 本来就覆盖不到 `register_*_menu()` 注册的菜单项和自绘窗口文本，用英语可避免任何语言的用户看到外语菜单。
 
-词条清单、硬规则与「新增一门语言」的完整流程见 [`LOCALIZATION.md`](LOCALIZATION.md)。
+> **破坏性变更**：v0.2.x 保存的转换态工程含中文键（`档位` / `原始宽` / `原始效果名` / `原始文件名项`），v0.3 不再识别。元数据丢失会让 OFF 还原退回 `画像ファイル`（音频 / 3D 对象可能被错误还原）。因为当时还没有真实用户工程保存转换态，未在 DLL 内做旧键别名兼容；升级前先 OFF 还原或重新转换。
+
+词条清单与新增语言流程见 [`LOCALIZATION.md`](LOCALIZATION.md)。早期 v0.2.1 的三语包评估存档见 [`REVIEW.md`](REVIEW.md)。

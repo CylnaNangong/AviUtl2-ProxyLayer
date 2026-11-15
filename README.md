@@ -1,15 +1,15 @@
 <div align="center">
 
-# ProxyLayer / 代理图层 / プロキシレイヤー
+# ProxyLayer
 
 **给 AviUtl ExEdit2 的「预览代理图层」原生插件**  
 打开一个开关，整个工程里的大尺寸静态图像自动换成低分辨率代理，播放立刻变流畅；**导出时自动还原原图**，成片画质完全不受影响。转换后时间轴仍显示源文件名，使用体验和原来的「画像ファイル」一致。
 
-`ProxyLayer.aux2 v0.2.1` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.0` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 语言 / Language:** &nbsp; **简体中文** &nbsp;|&nbsp; **[日本語 (Japanese)](docs/README_ja.md)** &nbsp;|&nbsp; **[English](docs/README_en.md)**
 
-*(插件界面内置三语显示包：`Language/日本語.ProxyLayer.aul2` / `Language/简体中文.ProxyLayer.aul2` / `Language/English.ProxyLayer.aul2`)*
+*(内部键名统一为日语；附带 `Language/简体中文.ProxyLayer.aul2` / `Language/English.ProxyLayer.aul2` 两个显示包)*
 
 </div>
 
@@ -32,10 +32,10 @@
 - **跨图层取样保护**：体积光、体积雾、3D 桥接等脚本读取别的图层像素时，被取样图层自动保持全分辨率，避免「光束只亮中间一小块」。
 - **不重复解码原图**：代理命中后不再向宿主索取 40 MPx 原图（实测单次解码 95.6 ms，快路径命中率 97%）。
 - **时间轴显示源文件名**：转换后不再是一片 `ProxyLayer`；点 OFF 还原时自动恢复标准名。
-- **原始尺寸元数据**：下游脚本可读 `obj.getvalue("ProxyLayer","原始宽"/"原始高")` 自行补偿。
+- **原始尺寸元数据**：下游脚本可读 `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")` 自行补偿。
 - **严格白名单**：只转换静态图像输入（`画像ファイル` 等）与图片扩展名；音频、视频、OBJ、VRM、3D 模型不会被误转。
 - **全局开关 + 设置窗口**：「确定」保存、「取消」不保存；跨工程、跨重启长期生效。
-- **三语界面显示包**：`Language/*.ProxyLayer.aul2` 提供日本語 / 简体中文 / English 的参数名与提示，**不需要重新编译 DLL**，也不改变工程内保存的键名。
+- **日语内部键名 + 中/英显示包**：`.aup2` 存储键统一用宿主默认语言（日语），默认日语用户零配置；中文/英文用户靠 `Language/*.ProxyLayer.aul2` 只换显示文本。
 - **可选实验组件**：同名 `luaJIT.dll` 转发代理，把 `obj.w/obj.h` 映射回原尺寸（见 `src/ProxyLuaJIT.cpp`，默认不安装）。
 
 ## 安装
@@ -46,8 +46,8 @@
 
 | 包 | 内容 | 适用 |
 | --- | --- | --- |
-| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2` 三语显示包，拖进 AviUtl2 窗口即装 | 绝大多数用户；**不碰** `aviutl2.exe` 同目录 |
-| `ProxyLayer-<tag>-Installer.zip` | 主插件 + 三语显示包 + 可选 `luaJIT.dll` 转发代理 + `install.bat`（日/中/英） | 需要 `obj.w/obj.h` 尺寸补偿的用户 |
+| `ProxyLayer-<tag>.au2pkg.zip` | `Plugin/ProxyLayer.aux2` + `Language/*.aul2` 两个显示包，拖进 AviUtl2 窗口即装 | 绝大多数用户；**不碰** `aviutl2.exe` 同目录 |
+| `ProxyLayer-<tag>-Installer.zip` | 主插件 + 两个显示包 + 可选 `luaJIT.dll` 转发代理 + `install.bat`（日/中/英） | 需要 `obj.w/obj.h` 尺寸补偿的用户 |
 
 **Installer 包的一键流程**（这就是「把原 DLL 改名、放进自己的 DLL」那一步）：
 
@@ -76,35 +76,32 @@
 
 ## 界面语言（本地化）
 
-插件本体的参数名是编译期写死的（日/中混排：`画像ファイル` 与 `档位` 并列），AviUtl2 提供了官方 `.aul2` 语言机制来覆盖**显示名**：
+**v0.3 起，`.aup2` 中保存的内部键名统一为日语**（AviUtl2 默认语言 `Default`），与社区惯例一致。插件名、菜单与设置窗口文案一律用英语 `ProxyLayer`，所有语言下都相同。
 
-| 文件 | 效果 |
-| --- | --- |
-| `Language/日本語.ProxyLayer.aul2` | 中文参数名（档位 / 导出时强制原图 / …）全部显示为日文，效果名显示为「プロキシレイヤー」 |
-| `Language/简体中文.ProxyLayer.aul2` | 把残留的日文项（`モード` / `画像ファイル`）统一显示为中文 |
-| `Language/English.ProxyLayer.aul2` | 全部参数名英文化 |
+| 用户语言 | 看到什么 | 需要做什么 |
+| --- | --- | --- |
+| `Default`（日语，宿主默认） | 日语参数名 | **什么都不用装** |
+| `简体中文` | 中文参数名 | `Language/简体中文.ProxyLayer.aul2` |
+| `English` | 英文参数名 | `Language/English.ProxyLayer.aul2` |
 
-设计要点（重要，改语言包前请先读）：
+`.aul2` 只替换**显示文本**，内部键名与 `.aup2` 里保存的内容不变。文件名前缀必须与宿主语言设置值一致：真机 `Language\` 目录里只有 `English.*` / `简体中文.*` / `Default.*`，**没有「日本語」这个语言** —— `Default` 就是日语。
 
-- 语言包只替换**显示文本**，内部键名（`画像ファイル`、`档位`、`原始宽`…）与 `.aup2` 里保存的内容不变，**旧工程不会错位**。
-- 语言包的 section 名必须是插件文件名 `[ProxyLayer]`，键名必须是源码里的原始字符串，一字不差。
-- **不要翻译插件名 `ProxyLayer` 本身**：插件内部用 `wcscmp(name, L"ProxyLayer")` 识别自己的效果，改名会让全工程转换与还原失效。可以翻译显示标签 `代理图层`。
-- 宿主自带的菜单项（`代理图层\整个工程自动代理`）和设置窗口文本由 C++ 在注册时写入，`.aul2` 覆盖不到；这条线的做法（`InitializeConfig` + `CONFIG_HANDLE::translate` + `RELOAD_LANGUAGE` 事件）已记录在 [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md)，需要重新编译 DLL 才能生效。
+> ⚠️ **v0.3 是破坏性变更**：v0.2.x 保存的转换态工程里含中文键（`档位` / `原始宽` / `原始效果名` …），新 DLL 不再识别。升级前请先对工程点一次 OFF 还原，或重新执行自动代理。真实工程请在升级前备份。详见 [CHANGELOG.md](CHANGELOG.md)。
 
-更多细节、词条清单与「新增一门语言」的步骤见 [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md)。
+`tools/check_aul2.py` 在 CI 里直接从 `src/ProxyLayer.cpp` 解析 `FILTER_ITEM_*`，校验两个包的词条覆盖率、编码与陈旧键。菜单与自绘设置窗口不在 `.aul2` 覆盖范围内，所以统一用英语。
 
 ## 参数
 
-| 项目 | 说明 |
+| 项目（内部键名 / 日语） | 说明 |
 | --- | --- |
 | `画像ファイル` | 源图像路径（转换时自动写入） |
-| `モード` | 3 = 生产模式（`set_image_data` + 缩放补偿，保留下游效果链与相机） |
-| `档位` | AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32 |
-| `导出时强制原图` | 默认开，导出闸门 |
-| `本图层保持原图` | 单层逃生开关，被跨图层取样时自动置 1 |
-| `原始宽` / `原始高` / `原始效果名` / `原始文件名项` | 转换时写入的元数据，供还原与下游补偿 |
+| `プロキシ倍率` | AUTO / 1/2 / 1/4 / 1/8 / 1/16 / 1/32 |
+| `出力時は元画像を強制` | 默认开，导出闸门 |
+| `このレイヤーは元画像を維持` | 单层逃生开关，被跨图层取样时自动置 1 |
+| `元の幅` / `元の高さ` / `元のエフェクト名` / `元のファイル項目名` | 转换时写入的元数据，供还原与下游补偿 |
+| `プローブログを出力` / `プロキシマーカーを表示` / `出力状態をシミュレート` | 诊断与自测开关 |
 
-> `补偿 obj.w/h (实验)` 已在 **v0.2.1 移除**：它试图写回原生 `OBJECT_INFO::width/height`，被 Lua 探针证伪（宿主从当前纹理尺寸喂给 Lua，2048 → 1024 不变），纯属死代码。尺寸补偿的正确途径是**可选的 `luaJIT.dll` 转发代理**（把 `obj.w/h` 映射回原尺寸，OpenGlow / 光束_H 等读尺寸的脚本依赖它，务必保留），或让脚本读 `obj.getvalue("ProxyLayer","原始宽"/"原始高")`。
+> **`モード` 已在 v0.3 移除**：0/1/2/4 是早期 A/B 测量用的实验变体（`draw_image` / `draw_poly` / 无补偿对照），生产只用 `set_image_data` + 相对缩放这一条路径，现在固定为编译期常量。尺寸补偿的正确途径是**可选的 `luaJIT.dll` 转发代理**（OpenGlow / 光束_H 等读 `obj.w/h` 的脚本依赖它，务必保留），或让脚本读 `obj.getvalue("ProxyLayer","元の幅"/"元の高さ")`；v0.2.1 已删的 `补偿 obj.w/h (实验)` 同理，原生 `OBJECT_INFO` 写回被 Lua 探针证伪。
 
 ## 工作原理（简述）
 
@@ -120,11 +117,11 @@
 
 ## 已知限制
 
-- AviUtl2 SDK 无法在代理纹理下让 `obj.w/obj.h` 保持不变（Lua 侧实测 2048 → 1024）。**可选的 `luaJIT.dll` 转发代理能把它映射回原尺寸**（A/B 实测 1024 → 2048），OpenGlow / 光束_H 这类按 `obj.w/h` 算作用范围的脚本依赖它，所以不能省；脚本也可自行读 `原始宽/原始高` 补偿。代理对 `getpixeldata()` 这类**缓冲尺寸**读取无效，体积光等脚本靠跨图层取样保护解决。
+- AviUtl2 SDK 无法在代理纹理下让 `obj.w/obj.h` 保持不变（Lua 侧实测 2048 → 1024）。**可选的 `luaJIT.dll` 转发代理能把它映射回原尺寸**（A/B 实测 1024 → 2048），OpenGlow / 光束_H 这类按 `obj.w/h` 算作用范围的脚本依赖它，所以不能省；脚本也可自行读 `元の幅/元の高さ` 补偿。代理对 `getpixeldata()` 这类**缓冲尺寸**读取无效，体积光等脚本靠跨图层取样保护解决。
 - 被跨图层取样的图层会保持全分辨率，因此不享受加速。
 - 只处理静态图像；预览画面会比原图糊，导出不受影响。
 - 首次播放有缓存构建期。
-- 插件菜单项与设置窗口文本仍是编译期字符串（中/日混排），`.aul2` 只覆盖效果名与参数名；要彻底本地化需按下节流程重新编译。
+- 插件菜单项与设置窗口文本是编译期字符串，统一用英语；`.aul2` 只覆盖效果名与参数名，不覆盖菜单与自绘窗口。
 - 某些第三方 Rust/Egui 插件在宿主退出时会 panic，与本插件无关。
 
 ## 构建
@@ -203,7 +200,7 @@ src/ProxyLayer.cpp      主插件
 src/ProxyLuaJIT.cpp     可选：同名 luaJIT.dll 转发代理（实验）
 src/png_writer.h        零依赖 RGBA8 PNG 编码器
 src/ExportProbe.cpp     测试专用：用官方 output_file() 直启真实导出
-Language/*.aul2         三语界面显示包（日本語 / 简体中文 / English）
+Language/*.aul2         中/英界面显示包（日语为宿主默认，无需语言包）
 build_*.sh              构建脚本
 tools/gen_luaproxy_def.py  从 luaJIT.dll 导出表生成 322 条 PE forwarder
 tools/dump_stack.py     纯标准库 minidump 分析器（异常/栈/模块直方图）

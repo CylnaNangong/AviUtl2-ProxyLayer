@@ -71,7 +71,6 @@ jobs:
           # Cheap guards so a broken helper script can never reach a release.
           python3 -m py_compile tools/*.py packaging/build_release.py
           for s in build_*.sh; do bash -n "$s"; done
-          test -f "Language/日本語.ProxyLayer.aul2"
           test -f "Language/简体中文.ProxyLayer.aul2"
           test -f "Language/English.ProxyLayer.aul2"
 
@@ -91,7 +90,7 @@ jobs:
           done
           # The display packs are useless if they never reach the user, and the
           # host only reads them from Language\ -- check both zips by name.
-          for pack in "Language/日本語.ProxyLayer.aul2" "Language/简体中文.ProxyLayer.aul2" "Language/English.ProxyLayer.aul2"; do
+          for pack in "Language/简体中文.ProxyLayer.aul2" "Language/English.ProxyLayer.aul2"; do
             for f in "dist/ProxyLayer-${TAG}.au2pkg.zip" "dist/ProxyLayer-${TAG}-Installer.zip"; do
               if ! python3 -c 'import sys,zipfile; sys.exit(0 if sys.argv[2] in zipfile.ZipFile(sys.argv[1]).namelist() else 1)' "$f" "$pack"; then
                 echo "::error::'$pack' is missing from $f"
@@ -108,7 +107,7 @@ jobs:
               echo "| \`$(basename "$f")\` | $(wc -c < "$f" | tr -d ' ') | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
             done
             echo ""
-            echo "UI display packs included: 日本語 / 简体中文 / English (\`Language/*.ProxyLayer.aul2\`)."
+            echo "UI display packs included: 简体中文 / English (Japanese is the host default; no pack needed)."
             echo "Switch them in AviUtl2 under 設定 → 言語の設定 (Setup → Language)."
           } >> "${GITHUB_STEP_SUMMARY}"
           sha256sum dist/*.zip
