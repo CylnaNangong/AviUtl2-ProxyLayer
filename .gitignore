@@ -1,0 +1,19 @@
+# Build artefacts
+build/
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.log
+
+# AviUtl2 official SDK headers are NOT redistributed here.
+# Put filter2.h / cache2.h / logger2.h / plugin2.h / input2.h /
+# output2.h / config2.h / module2.h into include/ before building.
+include/
+
+# Local preferences / test markers / host runtimes
+proxy-*.on
+*.old-running
+smoke-runtime/
+release-staging/
