@@ -1624,34 +1624,74 @@ static std::unordered_map<std::wstring, SrcDims> g_src_dims;  // guarded by g_mu
 
 // AUTO level: degrade only when the source is genuinely large. Below ~2 Mpx a
 // preview proxy costs more than it saves, so leave it alone entirely.
-// AUTO v2: choose div from the SOURCE / SCENE pixel ratio, not from the
-// source size alone. Target ~1 texel per screen pixel (proxy pixels ~= scene
-// pixels). div = sqrt(src/scene), rounded UP to a power of two, capped at 8.
+// AUTO v2 chose div from the SOURCE / SCENE pixel ratio, targeting ~1 texel
+// per screen pixel. AUTO v3 fixes a real-project blind spot discovered from
+// ProxyLayer-perf.log telemetry:
 //
-//   7000x8000 @ 1920x1080 : sqrt(56.0/2.07)=5.20 -> 8   (same as v1)
-//   7000x8000 @ 3840x2160 : sqrt(56.0/8.29)=2.60 -> 4   (4K: sharper)
-//   2048x2048 @ 1920x1080 : sqrt( 4.19/2.07)=1.42 -> 2
-//   1920x1080 @ 1920x1080 : sqrt( 2.07/2.07)=1.00 -> 1   (v1 wrongly did 2)
-//       any   @  640x360  : sqrt(56.0/0.23)=15.6  -> 8   (cap)
+//   FILTER_PROC_VIDEO::scene describes the scene CURRENTLY BEING RENDERED.
+//   A PV project often keeps character art in a huge sub-scene (this user's
+//   PV工程.aup2 has two 10000x6250 = 62.5 Mpx sub-scenes) that is then scaled
+//   down into a 2048x1080 master. A 62.5 Mpx source inside a 62.5 Mpx scene
+//   yields need = 1.00 -> div = 1 -> NO PROXY AT ALL, so every frame decodes
+//   the full-resolution original. Measured on that project: auto1 = 69.6% of
+//   all calls, decode_avg = 56 ms, decode_max = 313 ms, fast = 28.4%.
+//
+//   A canvas that large is a COMPOSITING WORK CANVAS, not what the viewer
+//   sees; only the master composite (here 2048x1080) is displayed. Clamp the
+//   effective "screen" to a 1080p-class preview budget. Canvases up to 4K are
+//   left completely untouched, so AUTO v2's deliberate "4K is sharper" rule
+//   still holds for real master scenes. Preview-only: export restores L0.
+//
+//   10000x6250 sub-scene, 62.5 Mpx src : sqrt(62.5/2.77)=4.75 -> 8  (was 1)
+//    8000x5000 sub-scene, 40.0 Mpx src : sqrt(40.0/2.77)=3.80 -> 8  (was 1)
+//    3840x2160 master,    56.0 Mpx src : sqrt(56.0/8.29)=2.60 -> 4  (unchanged)
+//    1920x1080 master,     4.19 Mpx src: sqrt( 4.19/2.07)=1.42 -> 2  (unchanged)
+//    1920x1080 master,     2.07 Mpx src: sqrt( 2.07/2.07)=1.00 -> 1  (unchanged)
 //
 // Measured frame times (12 x 7000x8000, VramCacheSize=1024) justify the
 // aggressive preview-only downscale: div=1 ~1216 ms, div=4 ~64 ms,
 // div=8 ~19 ms. The export gate always restores the original.
-static int AutoDiv(int w, int h, int sw, int sh) {
-    const double src   = (double)w * (double)h;
-    double       scene = (double)sw * (double)sh;
+static constexpr double kPreviewBudgetPx   = 2048.0 * 1080.0 * 1.25; // ~2.77 Mpx
+static constexpr double kOversizedScenePx  = 3840.0 * 2160.0 * 1.50; // ~12.44 Mpx
+static constexpr double kHugeSourcePx      = 16.0 * 1000000.0;        // 16 Mpx
+// composited = this object lives in a sub-scene being rendered INTO another
+// scene (SCENE_INFO::origin_id != id). Its canvas is never the final picture.
+static double EffectiveScenePixels(int sw, int sh, bool composited) {
+    double scene = (double)sw * (double)sh;
     if (scene < 1.0) scene = 1920.0 * 1080.0;   // sane fallback
-    const double need = std::sqrt(src / scene);
+    // Sub-scenes and oversized work canvases are clamped; an ordinary 1080p/4K
+    // master scene keeps its true resolution (AUTO v2 "4K is sharper" holds).
+    if (composited || scene > kOversizedScenePx) {
+        if (scene > kPreviewBudgetPx) scene = kPreviewBudgetPx;
+    }
+    return scene;
+}
+static int DivFromNeed(double need) {
     if (need <= 1.0001) return 1;               // source is not larger than screen
     int div = 1;
     while (div < 8 && (double)div < need) div <<= 1;
     return div;
 }
-static double AutoNeed(int w, int h, int sw, int sh) {
-    const double src   = (double)w * (double)h;
-    double       scene = (double)sw * (double)sh;
-    if (scene < 1.0) scene = 1920.0 * 1080.0;
-    return std::sqrt(src / scene);
+// capped (optional) reports whether the v3 rules raised div above what the
+// raw scene resolution would have produced. Telemetry only; no behaviour.
+static int AutoDiv(int w, int h, int sw, int sh, bool composited,
+                   bool* capped = nullptr) {
+    const double src = (double)w * (double)h;
+    double raw = (double)sw * (double)sh;
+    if (raw < 1.0) raw = 1920.0 * 1080.0;
+    const int rawDiv = DivFromNeed(std::sqrt(src / raw));
+    int div = DivFromNeed(std::sqrt(src / EffectiveScenePixels(sw, sh, composited)));
+    // Absolute floor: a genuinely huge source must NEVER stay at div=1 in
+    // preview, whatever the scene reports. Otherwise every frame decodes the
+    // full-resolution original (measured 56 ms avg / 313 ms peak). Manual
+    // levels bypass AutoDiv entirely, so users keep a full-resolution escape.
+    if (div == 1 && src >= kHugeSourcePx) div = 2;
+    if (capped) *capped = (div > rawDiv);
+    return div;
+}
+static double AutoNeed(int w, int h, int sw, int sh, bool composited) {
+    const double src = (double)w * (double)h;
+    return std::sqrt(src / EffectiveScenePixels(sw, sh, composited));
 }
 
 // Some hosts run with a restricted token: %TEMP% can be writable from a normal
@@ -1928,6 +1968,19 @@ static PerfAgg g_perf;
 static std::atomic<int> g_stat_gated{ 0 };      // export/save gate or unknown state
 static std::atomic<int> g_stat_keep{ 0 };       // このレイヤーは元画像を維持
 static std::atomic<int> g_stat_div1{ 0 };       // AUTO decided no downscale needed
+static std::atomic<int> g_stat_cap{ 0 };        // preview budget raised div (v3 fix hit)
+static std::atomic<int> g_stat_subscene{ 0 };   // rendered inside a composited sub-scene
+static std::atomic<int> g_stat_scene_big{ 0 };  // scene canvas larger than preview budget
+static std::atomic<int> g_stat_scene_maxw{ 0 }; // widest scene canvas seen in window
+static std::atomic<int> g_stat_div1_maxmp{ 0 };// largest source (Mpx) among div=1 frames
+static void NoteMaxW(int w) {
+    int cur = g_stat_scene_maxw.load();
+    while (w > cur && !g_stat_scene_maxw.compare_exchange_weak(cur, w)) {}
+}
+static void NoteDiv1Mpx(int mp) {
+    int cur = g_stat_div1_maxmp.load();
+    while (mp > cur && !g_stat_div1_maxmp.compare_exchange_weak(cur, mp)) {}
+}
 
 // Caller must hold g_perf.mu. Writes one summary line and resets the window.
 static void PerfFlushLocked(const char* tag) {
@@ -1940,7 +1993,7 @@ static void PerfFlushLocked(const char* tag) {
         "[%02u/%02u %02u:%02u:%02u] %s calls=%d win=%.2fs fast=%d slow=%d "
         "filter_avg=%.3fms filter_sum=%.1fms decode_avg=%.3fms decode_max=%.1fms "
         "div[1]=%d [2]=%d [4]=%d [8]=%d [16]=%d [32]=%d [64]=%d "
-        "L0:gate=%d keep=%d auto1=%d\n",
+        "L0:gate=%d keep=%d auto1=%d cap=%d sub=%d big=%d maxw=%d d1mp=%d\n",
         st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, tag,
         g_perf.calls, win, g_perf.fast, g_perf.slow,
         g_perf.sum_total / g_perf.calls, g_perf.sum_total,
@@ -1949,7 +2002,10 @@ static void PerfFlushLocked(const char* tag) {
         g_perf.div_hist[0], g_perf.div_hist[1], g_perf.div_hist[2],
         g_perf.div_hist[3], g_perf.div_hist[4], g_perf.div_hist[5],
         g_perf.div_hist[6],
-        g_stat_gated.exchange(0), g_stat_keep.exchange(0), g_stat_div1.exchange(0));
+        g_stat_gated.exchange(0), g_stat_keep.exchange(0), g_stat_div1.exchange(0),
+        g_stat_cap.exchange(0), g_stat_subscene.exchange(0),
+        g_stat_scene_big.exchange(0), g_stat_scene_maxw.exchange(0),
+        g_stat_div1_maxmp.exchange(0));
     PerfLogLine(line);
     g_perf.calls = g_perf.fast = g_perf.slow = 0;
     g_perf.sum_total = g_perf.sum_decode = g_perf.max_decode = 0;
@@ -2029,6 +2085,15 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
     }
     const int scene_w = (v->scene && v->scene->width  > 0) ? v->scene->width  : 1920;
     const int scene_h = (v->scene && v->scene->height > 0) ? v->scene->height : 1080;
+    // SCENE_INFO::origin_id is the scene that STARTED this render. When it
+    // differs from id we are inside a sub-scene being composited into the
+    // master. Its width/height then describe the sub-scene canvas, NOT what
+    // the viewer sees - exactly the case AUTO v2 mis-measured.
+    const bool composited = (v->scene && v->scene->origin_id != v->scene->id);
+    if (composited) g_stat_subscene.fetch_add(1);
+    if ((double)scene_w * (double)scene_h > kOversizedScenePx)
+        g_stat_scene_big.fetch_add(1);
+    NoteMaxW(scene_w);
     const bool mark = item_mark.value;
     const std::wstring fkey = FileKeyFor(file);
 
@@ -2047,7 +2112,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
         }
     }
     if (auto_level && !gated && haveDims)
-        div = AutoDiv(dims.w, dims.h, scene_w, scene_h);
+        div = AutoDiv(dims.w, dims.h, scene_w, scene_h, composited);
     const bool wantL0 = gated || item_keep_original.value || div == 1;
     if (gated)                  g_stat_gated.fetch_add(1);
     if (item_keep_original.value) g_stat_keep.fetch_add(1);
@@ -2062,6 +2127,16 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
 
     auto common = [&](const SourceView& src, int W, int H) -> bool {
         perf.W = W; perf.H = H; perf.div = div;
+        // Count once per invocation (both fast and slow paths funnel here):
+        // did the v3 preview budget raise div above what the raw scene would
+        // have produced? This is the direct proof the sub-scene fix is active.
+        if (auto_level && !gated && W > 0 && H > 0) {
+            bool capHit = false;
+            (void)AutoDiv(W, H, scene_w, scene_h, composited, &capHit);
+            if (capHit) g_stat_cap.fetch_add(1);
+            if (div == 1 && !item_keep_original.value)
+                NoteDiv1Mpx((int)(((double)W * (double)H) / 1000000.0 + 0.5));
+        }
         {
             static std::unordered_map<std::wstring, int> active_seen;
             wchar_t ak[256];
@@ -2075,7 +2150,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
                      auto_level ? L"AUTO" : L"MANUAL", div, state,
                      W, H, (double)W * (double)H / 1000000.0,
                      (W + div - 1) / div, (H + div - 1) / div,
-                     scene_w, scene_h, AutoNeed(W, H, scene_w, scene_h),
+                     scene_w, scene_h, AutoNeed(W, H, scene_w, scene_h, composited),
                      src.data ? L"decoded" : L"proxy-cache", file.c_str());
             }
         }
@@ -2120,7 +2195,7 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_src_dims[fkey] = SrcDims{ W, H };
     }
-    if (auto_level && !gated) div = AutoDiv(W, H, scene_w, scene_h);
+    if (auto_level && !gated) div = AutoDiv(W, H, scene_w, scene_h, composited);
     if (div < 1) div = 1;
 
     // YUY2 / YC48 are not 4-byte-per-pixel layouts; reading them through the
