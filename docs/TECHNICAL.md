@@ -106,3 +106,41 @@ select_scene(original) 还原用户所在场景
 > **破坏性变更**：v0.2.x 保存的转换态工程含中文键（`档位` / `原始宽` / `原始效果名` / `原始文件名项`），v0.3 不再识别。元数据丢失会让 OFF 还原退回 `画像ファイル`（音频 / 3D 对象可能被错误还原）。因为当时还没有真实用户工程保存转换态，未在 DLL 内做旧键别名兼容；升级前先 OFF 还原或重新转换。
 
 词条清单与新增语言流程见 [`LOCALIZATION.md`](LOCALIZATION.md)。早期 v0.2.1 的三语包评估存档见 [`REVIEW.md`](REVIEW.md)。
+
+## 10. 半透明与 L0 路径（v0.3.2 两个 bug）
+
+### 10.1 alpha 被乘两次
+
+`input2.h` 只给 PA64 / HF64 标了「乗算済みα」，`filter2.h` 则给 `INPUT_PIXEL_FORMAT::RGBA` 标了
+`DXGI_FORMAT_R8G8B8A8_UNORM ※PIXEL_RGBA` —— 与 `get_image_data()` / `set_image_data()` 的
+`PIXEL_RGBA` 是同一个结构。早期实现把 8bit RGBA / BGRA 当成 **straight alpha**，读像素时做了
+`RGB × alpha` 转成 premultiplied，再交给 `set_image_data()`；宿主内部本来就是 premultiplied，
+于是半透明像素被乘两次，50% alpha 的青色只剩下约 0.56 倍亮度。之前的几何 A/B 与导出闸门
+验收都用**不透明**网格图，所以 0 像素差的设计掩盖了这个 bug。
+
+修法：读取时只做格式转换（BGRA 的 R/B 交换、PA64/HF64 的 16→8），**绝不改 alpha 语义**；
+`Downsample()` 继续在宿主 premultiplied 空间做线性 box average（对半透明边缘是正确做法，
+不需要 un-premultiply 往返）。`ToStraightRGBA8()` 只在写磁盘 PNG 时做 un-premultiply。
+
+### 10.2 L0 不是直通，而是全尺寸重绘
+
+`FLAG_INPUT` 媒体对象效果必须自己把图像交给 `set_image_data()`；不调用就没有图像，而
+`func_proc_video()` 返回 `false` 会**中断后续滤镜与输出**（filter2.h 注释明确）。所以
+`div=1` / 导出闸门 / 单层保持原图时的 L0 路径无法"什么都不做"，只能重绘原图。
+
+早期 `FallbackL0()` 逐像素调用 `ReadPremul()` 并分配一份全尺寸副本：对 10000×6250 素材就是
+62.5M 次调用 + 250 MB 分配，每个对象每帧一次。真机 `ProxyLayer-perf.log` 显示
+`filter_avg≈300ms`（其中解码 72ms，其余约 230ms 全是这次转换）、`fast=0~40%`、
+`div[1]` 占 70–100% —— 这解释了"代理开了却没变流畅，甚至更慢"。
+
+修法：`CACHE_FILE_IMAGE::format == RGBA` 且 `pitch == width*4` 时，把宿主缓存 buffer
+**直接**传给 `set_image_data()`（零拷贝，缓存引用在函数返回前有效，而 `set_image_data` 是同步上传）；
+带 padding 时逐行 `memcpy`；只有 16bit / BGRA 等格式才逐像素转换。
+
+### 10.3 仍然存在的开销
+
+L0 每帧仍要 `get_image_file_cache()`，62.5 MPx 的 PNG 解码约 72 ms（峰值 468 ms），
+日志里 `open media file` 反复出现说明宿主图像缓存被这些超大图挤爆。真正治本的做法是
+**在转换阶段跳过 AUTO 判定为 `div=1` 的对象**（小图本来就不需要代理），让它们保持原生
+`画像ファイル` 完全不进插件；以及保证大图对象在稳态下 100% 命中快路径。
+`ProxyLayer-perf.log` 新增的 `L0:gate/keep/auto1` 计数用来区分 L0 的三种成因。

@@ -1515,27 +1515,25 @@ struct SourceView {
     INPUT_PIXEL_FORMAT fmt = INPUT_PIXEL_FORMAT::RGBA;
 };
 
-// Returns PREMULTIPLIED RGBA8 for one source pixel.
-static inline PIXEL_RGBA ReadPremul(const SourceView& s, int x, int y) {
+// Returns the source pixel as PIXEL_RGBA, preserving the host's own alpha
+// convention. filter2.h defines INPUT_PIXEL_FORMAT::RGBA as
+// "DXGI_FORMAT_R8G8B8A8_UNORM ※PIXEL_RGBA" - i.e. the SAME struct and the
+// SAME premultiplied representation that set_image_data() consumes. Only a
+// channel swap / 16-to-8 conversion is needed here. Pre-multiplying RGB by
+// alpha again (v0.3.1 and earlier) dimmed every translucent pixel twice:
+// measured 50%-alpha cyan rendered at ~0.56x brightness. Do NOT re-add it.
+static inline PIXEL_RGBA ReadSourcePixel(const SourceView& s, int x, int y) {
     const uint8_t* p = s.data + (size_t)y * (size_t)s.pitch;
     PIXEL_RGBA o{};
     switch (s.fmt) {
-    case INPUT_PIXEL_FORMAT::RGBA: { // R8G8B8A8_UNORM, straight
+    case INPUT_PIXEL_FORMAT::RGBA: { // R8G8B8A8_UNORM, host-native PIXEL_RGBA
         const uint8_t* q = p + (size_t)x * 4u;
-        float a = q[3] / 255.f;
-        o.r = (uint8_t)((q[0] * a) + 0.5f);
-        o.g = (uint8_t)((q[1] * a) + 0.5f);
-        o.b = (uint8_t)((q[2] * a) + 0.5f);
-        o.a = q[3];
+        o = PIXEL_RGBA{ q[0], q[1], q[2], q[3] };
         break;
     }
-    case INPUT_PIXEL_FORMAT::BGRA: { // B8G8R8A8_UNORM, straight
+    case INPUT_PIXEL_FORMAT::BGRA: { // B8G8R8A8_UNORM, swap R/B only
         const uint8_t* q = p + (size_t)x * 4u;
-        float a = q[3] / 255.f;
-        o.r = (uint8_t)((q[2] * a) + 0.5f);
-        o.g = (uint8_t)((q[1] * a) + 0.5f);
-        o.b = (uint8_t)((q[0] * a) + 0.5f);
-        o.a = q[3];
+        o = PIXEL_RGBA{ q[2], q[1], q[0], q[3] };
         break;
     }
     case INPUT_PIXEL_FORMAT::BGR: { // B8G8R8X8_UNORM, opaque
@@ -1563,7 +1561,8 @@ static inline PIXEL_RGBA ReadPremul(const SourceView& s, int x, int y) {
     return o;
 }
 
-// Box downsample in PREMULTIPLIED space (correct for translucent edges).
+// Box downsample in the host's premultiplied space (linear, so translucent
+// edges keep correct colour/alpha without un-premultiply round trips).
 static std::vector<PIXEL_RGBA> Downsample(const SourceView& s, int div) {
     const int pw = std::max(1, (s.w + div - 1) / div);
     const int ph = std::max(1, (s.h + div - 1) / div);
@@ -1575,7 +1574,7 @@ static std::vector<PIXEL_RGBA> Downsample(const SourceView& s, int div) {
             const int x0 = px * div, x1 = std::min(s.w, x0 + div);
             for (int y = y0; y < y1; ++y) {
                 for (int x = x0; x < x1; ++x) {
-                    PIXEL_RGBA q = ReadPremul(s, x, y);
+                    PIXEL_RGBA q = ReadSourcePixel(s, x, y);
                     r += q.r; g += q.g; b += q.b; a += q.a; ++n;
                 }
             }
@@ -1587,7 +1586,7 @@ static std::vector<PIXEL_RGBA> Downsample(const SourceView& s, int div) {
     return out;
 }
 
-// Convert premultiplied -> straight alpha for standards-compliant PNG.
+// Convert the host premultiplied buffer -> straight alpha for PNG files.
 static std::vector<uint8_t> ToStraightRGBA8(const std::vector<PIXEL_RGBA>& pm) {
     std::vector<uint8_t> out(pm.size() * 4u);
     for (size_t i = 0; i < pm.size(); ++i) {
@@ -1819,10 +1818,27 @@ static bool FallbackL0(FILTER_PROC_VIDEO* v, const SourceView& src, const wchar_
         if (n.fetch_add(1) < 5) Log(why);
     }
     const int W = src.w, H = src.h;
+    // L0 used to re-convert the WHOLE image pixel-by-pixel and allocate a
+    // second full-size buffer. For a 10000x6250 source that is a 250 MB
+    // allocation + 62.5M virtual calls per frame, which showed up as
+    // ~300 ms per filter invocation on real projects. The host's file cache
+    // is already PIXEL_RGBA, so hand it straight to set_image_data().
+    if (src.fmt == INPUT_PIXEL_FORMAT::RGBA && src.pitch == W * 4) {
+        v->set_image_data(reinterpret_cast<const PIXEL_RGBA*>(src.data), W, H);
+        return true;
+    }
     std::vector<PIXEL_RGBA> full((size_t)W * H);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-            full[(size_t)y * W + x] = ReadPremul(src, x, y);
+    if (src.fmt == INPUT_PIXEL_FORMAT::RGBA && src.pitch > W * 4) {
+        // Padded rows: one memcpy per row instead of one call per pixel.
+        for (int y = 0; y < H; ++y)
+            std::memcpy(full.data() + (size_t)y * W,
+                        src.data + (size_t)y * (size_t)src.pitch,
+                        (size_t)W * sizeof(PIXEL_RGBA));
+    } else {
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                full[(size_t)y * W + x] = ReadSourcePixel(src, x, y);
+    }
     v->set_image_data(full.data(), W, H);
     return true;
 }
@@ -1907,6 +1923,11 @@ struct PerfAgg {
     ULONGLONG window_start = 0;
 };
 static PerfAgg g_perf;
+// Why did a call end up on the L0 (full-resolution) path? Surfaced in the
+// perf log so a slow project can be diagnosed without attaching a debugger.
+static std::atomic<int> g_stat_gated{ 0 };      // export/save gate or unknown state
+static std::atomic<int> g_stat_keep{ 0 };       // このレイヤーは元画像を維持
+static std::atomic<int> g_stat_div1{ 0 };       // AUTO decided no downscale needed
 
 // Caller must hold g_perf.mu. Writes one summary line and resets the window.
 static void PerfFlushLocked(const char* tag) {
@@ -1918,7 +1939,8 @@ static void PerfFlushLocked(const char* tag) {
     _snprintf_s(line, _countof(line), _TRUNCATE,
         "[%02u/%02u %02u:%02u:%02u] %s calls=%d win=%.2fs fast=%d slow=%d "
         "filter_avg=%.3fms filter_sum=%.1fms decode_avg=%.3fms decode_max=%.1fms "
-        "div[1]=%d [2]=%d [4]=%d [8]=%d [16]=%d [32]=%d [64]=%d\n",
+        "div[1]=%d [2]=%d [4]=%d [8]=%d [16]=%d [32]=%d [64]=%d "
+        "L0:gate=%d keep=%d auto1=%d\n",
         st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, tag,
         g_perf.calls, win, g_perf.fast, g_perf.slow,
         g_perf.sum_total / g_perf.calls, g_perf.sum_total,
@@ -1926,7 +1948,8 @@ static void PerfFlushLocked(const char* tag) {
         g_perf.max_decode,
         g_perf.div_hist[0], g_perf.div_hist[1], g_perf.div_hist[2],
         g_perf.div_hist[3], g_perf.div_hist[4], g_perf.div_hist[5],
-        g_perf.div_hist[6]);
+        g_perf.div_hist[6],
+        g_stat_gated.exchange(0), g_stat_keep.exchange(0), g_stat_div1.exchange(0));
     PerfLogLine(line);
     g_perf.calls = g_perf.fast = g_perf.slow = 0;
     g_perf.sum_total = g_perf.sum_decode = g_perf.max_decode = 0;
@@ -2026,6 +2049,9 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
     if (auto_level && !gated && haveDims)
         div = AutoDiv(dims.w, dims.h, scene_w, scene_h);
     const bool wantL0 = gated || item_keep_original.value || div == 1;
+    if (gated)                  g_stat_gated.fetch_add(1);
+    if (item_keep_original.value) g_stat_keep.fetch_add(1);
+    if (!gated && !item_keep_original.value && div == 1) g_stat_div1.fetch_add(1);
 
     // ---- FAST PATH: proxy already built -> never decode the original ------
     ProxyEntry* px = nullptr;

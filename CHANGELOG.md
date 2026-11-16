@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.3.2 — 2026-11-16（半透明 bugfix + L0 性能修复）
+
+- **修复半透明图层变灰**（用户真机 `PV工程.aup2` 报告：眼睛与云层边缘发灰，隐藏半透明图层后正常）。
+  根因：`ReadPremul()` 对 `INPUT_PIXEL_FORMAT::RGBA` / `BGRA` 多做了一次 `RGB × alpha`，但 `filter2.h` 明确写
+  `RGBA = 28 // DXGI_FORMAT_R8G8B8A8_UNORM ※PIXEL_RGBA`，与 `set_image_data()` 的 `PIXEL_RGBA` 是同一结构、
+  同一（宿主内部 premultiplied）语义。半透明像素因此被乘两次 alpha 而变暗。
+  隔离沙箱 A/B（原生 `画像ファイル` vs ProxyLayer div=2，2000×1000 半透明测试图）像素采样：
+
+  | 区域 | 修复前 R/L | 修复后 R/L |
+  | --- | --- | --- |
+  | 不透明红 | 1.037 | 1.000 |
+  | 50% 半透明青 | **0.577** | 1.117 |
+  | alpha 渐变 | **0.407** | 0.883 |
+
+  不透明区域始终一致，只有半透明被压暗 —— 符合"alpha 乘两次"的特征。
+  现在改名为 `ReadSourcePixel()`，只做通道交换 / 16→8 / half→8 转换，**不再预乘**。`Downsample()` 仍在宿主
+  premultiplied 空间做线性 box average（对半透明边缘数学正确）。
+- **修复 L0 路径的性能灾难**：`div=1` / 导出闸门 / 「このレイヤーは元画像を維持」原先走 `FallbackL0()`，
+  对**完整原图逐像素转换并再分配一份同尺寸缓冲**。用户工程有 8 张 10000×6250（62.5 MPx）素材，
+  即每次调用 62.5M 次虚调用 + 250 MB 分配；真机遥测 `filter_avg≈300ms`、`decode_avg≈72ms`、
+  `fast=0~40%`、`div[1]` 占 70–100%。现在当缓存格式已是紧密排列的 `PIXEL_RGBA` 时直接把
+  `CACHE_FILE_IMAGE::buffer` 交给 `set_image_data()`（零拷贝）；有行 padding 时改为逐行 `memcpy`，
+  其余格式才逐像素转换。
+- 遥测新增 `L0:gate=<n> keep=<n> auto1=<n>` 三个计数，下次可直接分辨 L0 是导出闸门、
+  单层保持原图、还是 AUTO 判定无需降采样。
+
+**是否需要重编译 DLL**：是。`dist/ProxyLayer.aux2` 已重编译。内部键名、语言包与 LuaJIT 转发代理均未改动。
+
 ## v0.3.1 — 2026-11-15
 
 - **删除参数面板顶部的 `FILTER_ITEM_SEPARATOR` 长提示行**（那行 `ProxyLayer | Pick the source image...` 又长又被截断）。改用官方 **`[Tips.ProxyLayer]`** 悬浮气泡：`effect.name` 写效果说明，12 个参数键写各自说明，鼠标悬停才显示。规则参考 [docs.aviutl2.jp](https://docs.aviutl2.jp/) 与宿主自带 `简体中文.aul2` 头注释「若定义如 `[Tips.ぼかし]` 这样在滤镜名称前加上 "Tips." 的区段，则可定义物件设置中设置项工具提示中的文字」。真机沙箱实测气泡正常弹出。
