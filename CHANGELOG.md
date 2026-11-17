@@ -37,7 +37,9 @@ v0.3.3 修好性能后，第一次让 3.63 MPx 级素材真正被降采样，把
     现在每次显示都重新居中到宿主所在显示器，并走 `HWND_TOPMOST → HWND_NOTOPMOST`
     抬升 + `BringWindowToTop` / `SetForegroundWindow`，前台锁拒绝时用
     `AttachThreadInput` 兜底。日志新增 `fg=... visible=...` 便于验证。
-- 遥测新增 `veto=`（被拦截的维度碰撞次数），`tools/read_perf.py` 支持全部四代日志格式。
+- 遥测新增 `veto=`（**登记映射时**被拦截的维度碰撞次数），`tools/read_perf.py` 支持全部四代日志格式。
+  注意：若宿主先渲染 5140×1712 素材、后渲染南宫颜后发，走的是「原生尺寸登记后回溯禁用」路径，
+  同样会修好但不会计入 `veto`；因此 **`veto=0` 不代表修复失效，以画面是否贴合为准**。
 
 **是否需要重编译 DLL**：是。`dist/ProxyLayer.aux2` 已重编译（约 125 KB，MD5 `eecd1723…`）。
 内部键名、语言包、**LuaJIT 转发代理**、安装脚本均未改动。升级后重启 AviUtl2 即可，
