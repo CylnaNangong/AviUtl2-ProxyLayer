@@ -97,19 +97,80 @@ extern "C" __declspec(dllexport) void InitializeConfig(CONFIG_HANDLE* config) {
 struct SizeMapEntry {
     double proxyW, proxyH, srcW, srcH;
     ULONGLONG tick;
+    bool allowW, allowH;   // false when that dimension is ambiguous
 };
-static std::mutex               g_sizemu;
+// Full-resolution (L0 / div=1) objects. luaJIT.dll's hook sees ONLY one
+// dimension at a time, so a proxy dimension that happens to equal an unrelated
+// object's native dimension must never be rewritten.
+// Real case (PV工程.aup2): 5140x1712 @ div=2 -> proxyH 856, while 南宫颜后发
+// is a native 628x856 layer. MapSize(856,"h") used to return 1712 and the
+// SoftAnchorBone mesh (y0 = -h/2 ...) moved the hair UP. It happened only in
+// the master composite, because the 5140x1712 asset lives in a 2048x1080
+// scene and its map is registered only when that scene renders.
+struct NativeSizeEntry { double w, h; ULONGLONG tick; };
+static std::mutex                g_sizemu;
 static std::vector<SizeMapEntry> g_sizemap;
+static std::vector<NativeSizeEntry> g_nativesizes;
+static std::atomic<int>          g_size_veto{ 0 };  // telemetry
+
+static void LogF(const wchar_t* fmt, ...);   // (also declared in Logging section)
+
+// g_sizemu MUST be held.
+static bool NativeDimActiveLocked(double d, bool isW) {
+    const ULONGLONG now = GetTickCount64();
+    for (const auto& n : g_nativesizes) {
+        if (now - n.tick > 30000) continue;              // project-switch safety
+        if ((isW ? n.w : n.h) == d) return true;
+    }
+    return false;
+}
 
 static void RegisterSizeMap(int pw, int ph, int sw, int sh) {
     const ULONGLONG now = GetTickCount64();
-    std::lock_guard<std::mutex> lk(g_sizemu);
-    for (auto& e : g_sizemap) {
-        if (e.proxyW == pw && e.proxyH == ph &&
-            e.srcW == sw && e.srcH == sh) { e.tick = now; return; }
+    bool vetoW = false, vetoH = false;
+    {
+        std::lock_guard<std::mutex> lk(g_sizemu);
+        vetoW = NativeDimActiveLocked((double)pw, true);
+        vetoH = NativeDimActiveLocked((double)ph, false);
+        if (vetoW || vetoH) g_size_veto.fetch_add(1);
+        for (auto& e : g_sizemap) {
+            if (e.proxyW == pw && e.proxyH == ph &&
+                e.srcW == sw && e.srcH == sh) {
+                e.tick = now; e.allowW = !vetoW; e.allowH = !vetoH;
+                return;
+            }
+        }
+        if (g_sizemap.size() >= 64) g_sizemap.erase(g_sizemap.begin());
+        g_sizemap.push_back({ (double)pw, (double)ph, (double)sw, (double)sh,
+                              now, !vetoW, !vetoH });
     }
-    if (g_sizemap.size() >= 64) g_sizemap.erase(g_sizemap.begin());
-    g_sizemap.push_back({ (double)pw, (double)ph, (double)sw, (double)sh, now });
+    if (vetoW || vetoH) {
+        static std::atomic<int> announced{ 0 };
+        if (announced.fetch_add(1) < 4)
+            LogF(L"ProxyLayer: size-map collision veto proxy=%dx%d (%s) "
+                 L"- an unproxied layer shares that dimension",
+                 pw, ph, vetoW && vetoH ? L"w+h" : vetoW ? L"w" : L"h");
+    }
+}
+
+static void RegisterNativeSize(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    const ULONGLONG now = GetTickCount64();
+    std::lock_guard<std::mutex> lk(g_sizemu);
+    bool found = false;
+    for (auto& n : g_nativesizes) {
+        if (n.w == w && n.h == h) { n.tick = now; found = true; break; }
+    }
+    if (!found) {
+        if (g_nativesizes.size() >= 256) g_nativesizes.erase(g_nativesizes.begin());
+        g_nativesizes.push_back({ (double)w, (double)h, now });
+    }
+    // A native size seen AFTER a map was registered must retroactively disable
+    // the colliding side of that map (render order is host-defined).
+    for (auto& e : g_sizemap) {
+        if (NativeDimActiveLocked(e.proxyW, true))  e.allowW = false;
+        if (NativeDimActiveLocked(e.proxyH, false)) e.allowH = false;
+    }
 }
 
 extern "C" __declspec(dllexport) int __cdecl
@@ -117,8 +178,10 @@ ProxyLayer_MapSize(double cur, int isW, double* out) {
     if (!out || cur <= 0.0) return 0;
     const ULONGLONG now = GetTickCount64();
     std::lock_guard<std::mutex> lk(g_sizemu);
+    if (NativeDimActiveLocked(cur, isW != 0)) return 0;
     for (auto it = g_sizemap.rbegin(); it != g_sizemap.rend(); ++it) {
         if (now - it->tick > 5000) continue;
+        if (isW ? !it->allowW : !it->allowH) continue;
         const double p = isW ? it->proxyW : it->proxyH;
         if (p == cur) { *out = isW ? it->srcW : it->srcH; return 1; }
     }
@@ -580,8 +643,69 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
 // Detection is by PARAMETER SEMANTICS (layer-reference item names), NOT by a
 // script-name blacklist, so new third-party scripts are covered automatically.
 // Both 1-based UI layer numbers and 0-based SDK numbers are accepted.
+// ---- Same-object absolute-pixel anchor protection --------------------------
+// Deformation scripts (SoftAnchorBone etc.) store 3 anchor points as ABSOLUTE
+// PIXEL COORDINATES in one 6-number item, e.g.
+//   bone=372.00,-992.00,0.00,-100.00,-356.00,858.00
+// They build obj.drawpoly() meshes from BOTH obj.w/obj.h and those constants.
+// On a 1/div texture the constants no longer match the buffer, and neither
+// obj.w/h compensation nor the luaJIT proxy can repair them. Full resolution
+// is the only correct answer. Detect by VALUE SHAPE, never by script name.
+static const wchar_t* kAnchorItems[] = {
+    L"bone", L"anchors", L"anchor", L"points", L"point", L"vertex", L"vertices",
+    L"control_points", L"ctrl_points", L"アンカー", L"座標", L"頂点", L"基準点"
+};
+static bool IsAbsoluteAnchorTuple(const char* v) {
+    if (!v || !*v) return false;
+    int n = 0;
+    bool negative = false, positive = false, large = false;
+    const char* q = v;
+    while (*q && n <= 6) {
+        char* end = nullptr;
+        const double d = std::strtod(q, &end);
+        if (end == q) return false;
+        if (++n > 6) return false;
+        if (d <= -64.0)  negative = true;
+        if (d >=  64.0)  positive = true;   // excludes display.camera=<neg,...,0,0,0>
+        if (std::fabs(d) >= 128.0) large = true;
+        q = end;
+        while (*q == ' ' || *q == '\t') ++q;
+        if (*q == ',') { ++q; while (*q == ' ' || *q == '\t') ++q; continue; }
+        if (*q == '\r' || *q == '\0') break;
+        return false;
+    }
+    return n == 6 && negative && positive && large;
+}
+static bool AliasHasAnchor(const char* alias) {
+    if (!alias || !*alias) return false;
+    const char* p = alias;
+    while (*p) {
+        const char* e = std::strchr(p, '\n');
+        const std::string line(p, e ? e - p : std::strlen(p));
+        p = e ? e + 1 : p + std::strlen(p);
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.compare(0, 8, "display.") == 0) continue;  // host state, not a script item
+        if (IsAbsoluteAnchorTuple(line.c_str() + eq + 1)) return true;
+    }
+    return false;
+}
+// Returns true when this OBJECT (not just its layer) must stay full-res.
+static bool ObjectHasAbsoluteAnchor(EDIT_SECTION* e, OBJECT_HANDLE o,
+                                    const EFFECT_HANDLE* list, int n) {
+    for (int i = 0; i < n; ++i) {
+        for (LPCWSTR item : kAnchorItems) {
+            LPCSTR v = e->get_effect_item_value(list[i], item);
+            if (IsAbsoluteAnchorTuple(v)) return true;
+        }
+    }
+    // Fallback for third-party scripts that used a different item name:
+    // the object alias is INI-like text containing every item value.
+    return (e->get_object_alias) && AliasHasAnchor(e->get_object_alias(o));
+}
 struct ProtectedLayers {
     std::unordered_set<int> layers;
+    std::unordered_set<OBJECT_HANDLE> objects;   // per-object anchor protection
 };
 static const wchar_t* kLayerRefItems[] = {
     L"光源レイヤー", L"光源图层", L"LightLayer", L"light_layer",
@@ -625,6 +749,28 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
       ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
             EFFECT_HANDLE list[64] = {};
             const int n = e->get_effect_list(o, list, 64);
+            bool isImageObject = false, hasCustomEffect = false;
+            for (int i = 0; i < n; ++i) {
+                LPCWSTR cn = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
+                if (!cn) continue;
+                if (std::wcscmp(cn, L"画像ファイル") == 0 ||
+                    std::wcscmp(cn, L"ProxyLayer") == 0) { isImageObject = true; continue; }
+                if (std::wcscmp(cn, L"標準描画") != 0) hasCustomEffect = true;
+            }
+            // Alias serialisation is relatively expensive (this pass runs on
+            // the UI thread), so only inspect objects with a real script.
+            if (isImageObject && hasCustomEffect &&
+                ObjectHasAbsoluteAnchor(e, o, list, n)) {
+                out.objects.insert(o);
+                static std::unordered_set<OBJECT_HANDLE> announced;
+                static std::mutex annMu;
+                bool first = false;
+                { std::lock_guard<std::mutex> lk(annMu);
+                  first = announced.insert(o).second; }
+                if (first)
+                    LogF(L"AutoProxy: absolute-pixel anchor on object -> "
+                         L"keeping full resolution (size-dependent script)");
+            }
             for (int i = 0; i < n; ++i) {
                 LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
                 if (nm && std::wcscmp(nm, L"ProxyLayer") == 0) continue;
@@ -711,6 +857,13 @@ static int ConvertScene(EDIT_SECTION* e, bool enable) {
             continue;
         }
         ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
+            if (enable && prot.objects.count(o)) {
+                // A downstream script uses absolute-pixel anchors. The proxy
+                // texture would break its mesh regardless of obj.w/h mapping.
+                changed += SetKeepOriginal(e, o, true);
+                if (EnsureDisplayName(e, o)) ++changed;
+                return;
+            }
             changed += ConvertObject(e, o, enable);
             if (enable && EnsureDisplayName(e, o)) ++changed;
         });
@@ -891,12 +1044,13 @@ static int ProtectScene(EDIT_SECTION* e) {
     const int maxLayer = std::min(std::max(info.layer_max, 0), 199);
     const int maxFrame = std::min(std::max(info.frame_max, 0), 19999);
     const ProtectedLayers prot = CollectProtectedLayers(e, maxLayer, maxFrame);
-    if (prot.layers.empty()) return 0;
+    if (prot.layers.empty() && prot.objects.empty()) return 0;
     int changed = 0;
     for (int layer = 0; layer <= maxLayer; ++layer) {
-        if (!prot.layers.count(layer)) continue;
+        const bool wholeLayer = prot.layers.count(layer) != 0;
         ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
-            changed += SetKeepOriginal(e, o, true);
+            if (wholeLayer || prot.objects.count(o))
+                changed += SetKeepOriginal(e, o, true);
         });
     }
     if (changed && e->set_edited_state) e->set_edited_state();
@@ -1203,6 +1357,53 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 // confused the QSVEnc save-dialog matcher). Both menus TOGGLE it, so a second
 // click always closes it. The switch keeps working with the window closed,
 // because its state lives in the project + global preference file.
+// Re-centre on the host's current monitor every time the panel opens. The
+// initial CW_USEDEFAULT position went stale after the host was moved to a
+// different display, which is one way a "shown" window can be off-screen.
+static void CenterPanelOnHost(HWND h) {
+    if (!h || !g_host_wnd || !IsWindow(g_host_wnd)) return;
+    RECT r{}, w{};
+    if (!GetWindowRect(g_host_wnd, &r) || !GetWindowRect(h, &w)) return;
+    const int winW = (int)(w.right - w.left), winH = (int)(w.bottom - w.top);
+    int x = (int)r.left + ((int)(r.right - r.left) - winW) / 2;
+    int y = (int)r.top  + ((int)(r.bottom - r.top)  - winH) / 2;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    HMONITOR mon = MonitorFromWindow(g_host_wnd, MONITOR_DEFAULTTONEAREST);
+    if (mon && GetMonitorInfoW(mon, &mi)) {
+        x = std::max<int>((int)mi.rcWork.left,
+                          std::min<int>(x, (int)mi.rcWork.right  - winW));
+        y = std::max<int>((int)mi.rcWork.top,
+                          std::min<int>(y, (int)mi.rcWork.bottom - winH));
+    }
+    SetWindowPos(h, nullptr, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+// A hidden owned popup created with CW_USEDEFAULT is often left BELOW other
+// host top-level windows, and SetForegroundWindow() alone can be refused by
+// the Windows foreground lock. The topmost -> not-topmost cycle raises it
+// reliably; AttachThreadInput is the last-resort fallback.
+static void ForcePanelToFront(HWND h) {
+    CenterPanelOnHost(h);
+    ShowWindow(h, SW_SHOWNORMAL);
+    SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(h);
+    SetForegroundWindow(h);
+    SetActiveWindow(h);
+    if (GetForegroundWindow() != h) {
+        HWND fg = GetForegroundWindow();
+        const DWORD t1 = GetWindowThreadProcessId(fg, nullptr);
+        const DWORD t2 = GetWindowThreadProcessId(h,  nullptr);
+        if (t1 && t2 && t1 != t2 && AttachThreadInput(t1, t2, TRUE)) {
+            SetForegroundWindow(h);
+            BringWindowToTop(h);
+            AttachThreadInput(t1, t2, FALSE);
+        }
+    }
+}
 static void TogglePanel(const wchar_t* why) {
     if (!g_panel || !IsWindow(g_panel)) return;
     if (IsWindowVisible(g_panel)) {
@@ -1211,9 +1412,10 @@ static void TogglePanel(const wchar_t* why) {
     } else {
         g_panel_draft.store(g_auto_proxy.load());   // fresh draft on each open
         UpdatePanelStatus();
-        ShowWindow(g_panel, SW_SHOW);
-        SetForegroundWindow(g_panel);
-        LogF(L"Panel: shown (%s)", why);
+        ForcePanelToFront(g_panel);
+        LogF(L"Panel: shown (%s) fg=%s visible=%s", why,
+             GetForegroundWindow() == g_panel ? L"ok" : L"blocked",
+             IsWindowVisible(g_panel) ? L"yes" : L"no");
     }
 }
 static void OnConfigMenu(HWND, HINSTANCE) { TogglePanel(L"設定 menu"); }
@@ -1993,7 +2195,7 @@ static void PerfFlushLocked(const char* tag) {
         "[%02u/%02u %02u:%02u:%02u] %s calls=%d win=%.2fs fast=%d slow=%d "
         "filter_avg=%.3fms filter_sum=%.1fms decode_avg=%.3fms decode_max=%.1fms "
         "div[1]=%d [2]=%d [4]=%d [8]=%d [16]=%d [32]=%d [64]=%d "
-        "L0:gate=%d keep=%d auto1=%d cap=%d sub=%d big=%d maxw=%d d1mp=%d\n",
+        "L0:gate=%d keep=%d auto1=%d cap=%d sub=%d big=%d maxw=%d d1mp=%d veto=%d\n",
         st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, tag,
         g_perf.calls, win, g_perf.fast, g_perf.slow,
         g_perf.sum_total / g_perf.calls, g_perf.sum_total,
@@ -2005,7 +2207,7 @@ static void PerfFlushLocked(const char* tag) {
         g_stat_gated.exchange(0), g_stat_keep.exchange(0), g_stat_div1.exchange(0),
         g_stat_cap.exchange(0), g_stat_subscene.exchange(0),
         g_stat_scene_big.exchange(0), g_stat_scene_maxw.exchange(0),
-        g_stat_div1_maxmp.exchange(0));
+        g_stat_div1_maxmp.exchange(0), g_size_veto.exchange(0));
     PerfLogLine(line);
     g_perf.calls = g_perf.fast = g_perf.slow = 0;
     g_perf.sum_total = g_perf.sum_decode = g_perf.max_decode = 0;
@@ -2127,6 +2329,10 @@ bool func_proc_video(FILTER_PROC_VIDEO* v) {
 
     auto common = [&](const SourceView& src, int W, int H) -> bool {
         perf.W = W; perf.H = H; perf.div = div;
+        // This object really is full resolution. Tell the luaJIT proxy so it
+        // never rewrites an obj.w/obj.h that coincidentally equals some other
+        // object's downscaled proxy dimension.
+        if (wantL0 && W > 0 && H > 0) RegisterNativeSize(W, H);
         // Count once per invocation (both fast and slow paths funnel here):
         // did the v3 preview budget raise div above what the raw scene would
         // have produced? This is the direct proof the sub-scene fix is active.

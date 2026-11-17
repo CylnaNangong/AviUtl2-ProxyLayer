@@ -6,10 +6,11 @@ one guaranteed final line on unload (tag EXIT). Each line records how often the
 render path skipped decoding the full-resolution original, plus a timing
 breakdown.
 
-Three telemetry generations are recognised:
+Four telemetry generations are recognised:
   v0.3.1 and earlier : no L0 suffix
   v0.3.2             : L0:gate= keep= auto1=
   v0.3.3             : + cap= sub= big= maxw= d1mp=
+  v0.3.4             : + veto= (blocked obj.w/h false mappings)
 
 Usage:
     python3 read_perf.py [path-to-ProxyLayer-perf.log] [--last N]
@@ -35,7 +36,8 @@ PAT = re.compile(
     r"\[64\]=(?P<d64>\d+)"
     r"(?:\s+L0:gate=(?P<gate>\d+) keep=(?P<keep>\d+) auto1=(?P<a1>\d+)"
     r"(?:\s+cap=(?P<cap>\d+) sub=(?P<sub>\d+) big=(?P<big>\d+)"
-    r"\s+maxw=(?P<maxw>\d+) d1mp=(?P<d1mp>\d+))?)?"
+    r"\s+maxw=(?P<maxw>\d+) d1mp=(?P<d1mp>\d+)"
+    r"(?:\s+veto=(?P<veto>\d+))?)?)?"
 )
 
 
@@ -126,6 +128,9 @@ def main():
             print("  %-24s %6d  (%5.1f%% of calls)" % (label, n, 100.0 * n / c if c else 0))
         print("  widest scene canvas      %6d px" % max(r["maxw"] or 0 for r in v33))
         print("  largest div=1 source     %6d MPx" % max(r["d1mp"] or 0 for r in v33))
+        vt = sum(r["veto"] or 0 for r in v33)
+        print("  size-map collisions veto %6d  (v0.3.4: obj.w/h false mapping blocked)"
+              % vt)
         d1 = sum(r["d1"] or 0 for r in v33)
         print("  div=1 frames             %6d  (%5.1f%% of calls)" %
               (d1, 100.0 * d1 / c if c else 0))
