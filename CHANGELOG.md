@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.3.5 — 2026-11-17（LuaProxy 改成对 (w,h) 匹配：彻底消除尺寸误映射）
+
+用户重启后确认：**寺倾花后发已修好，南宫颜后发在主合成仍向上平移**。日志给出了决定性证据：
+
+```
+10:43 会话：628x856 在 ACTIVE/PROBE 中出现 0 次
+           keep=0、veto=0、"layer opted out" 0 次
+           但有 5 条 "absolute-pixel anchor detected"
+```
+
+- **v0.3.4 的实现漏洞**：自动保护对命中的对象**只调 `SetKeepOriginal()` 然后 `return`**，跳过了
+  `ConvertObject()`。而 `SetKeepOriginal()` 只在对象已有 ProxyLayer 效果时才有效 —— 于是这些对象
+  **保持原生 `画像ファイル`，完全不进插件渲染路径**。寺倾花因此修好（根本没被缩小），但：
+  `RegisterNativeSize()` 挂在渲染路径上，从未为 `628x856` 调用 → **veto 机制完全没机会执行**。
+  而 `luaJIT.dll` 的 hook 是**全局**的（拦所有对象的 `obj.w/h`），主合成里 `5140x1712 @div=2`
+  照常注册 `proxyH=856 → srcH=1712`，南宫颜后发写 `obj.h=856` 时仍被误映射 → 后发上移。
+  次合成没渲染那个 5140x1712 素材，所以正常。
+- **治本修复（改 DLL，用户明确同意）**：`ProxyLuaJIT.cpp` 不再按**单维度数值**匹配。
+  hook 在 `obj.w` 到来时缓冲原始 w（按线程存于 `TlsAlloc`，避免动态加载 DLL 的隐式 TLS 崩溃风险），
+  等 `obj.h` 到来时用**完整 `(w,h)` 对**查询新导出 `ProxyLayer_MapSizePair()`；两个维度都必须相等才补偿。
+  命中时先用真实 `lua_setfield` 修正已提交的 `w` 字段，再替换栈顶的 `h` 值。
+  单维度的尺寸巧合从此不可能误伤：`(628,856)` 与代理 `(2570,856)` 只共享 h，不再匹配。
+  - 保留 `ProxyLayer_MapSize()` 供旧版 `luaJIT.dll` 使用；新版 DLL 检测不到 `MapSizePair` 时自动回退到旧逻辑。
+    因此**两个 DLL 可以分别升级**，任意组合都不会崩。
+  - 项目 23 个真实素材复算：`(628,856)`/`(578,858)` 不命中任何代理对 → 保持原值；
+    `(2570,856)→(5140,1712)`、`(1250,782)→(10000,6250)`、`(862,1052)→(1724,2104)` 等正常补偿，
+    OpenGlow / 光束_H 不受影响。
+- **插件侧同步修正**：
+  1. 受保护对象现在**先 `ConvertObject()` 再 `SetKeepOriginal(true)`**（与体积光跨图层保护语义一致），
+    使其进入渲染路径、强制 L0 全尺寸，并让 `RegisterNativeSize()` 真正登记其真实尺寸。
+  2. 扫描阶段新增 `RegisterNativeImageSize()`：对所有**未转换**的图像对象登记真实尺寸（带路径缓存，
+     只登记 `ファイル` 项、明确排除 ProxyLayer 效果、跳过音频/OBJ/视频），刷新 30 s TTL。
+     这给旧版单维度 hook 一个精确的兜底 veto，不再依赖渲染顺序。
+  3. 锚点检测放宽为 **4 / 6 / 8 个数值**的绝对坐标元组（原来只认 6 个），并按「键名前缀」
+     排除 `display.*` / `frame` 等宿主状态项。工程 453 个效果实例复算仍只命中 5 个 `bone`，零误伤。
+     日志现在输出**实际命中的效果/参数名**（`AutoProxy: absolute-pixel anchor detected in [SoftAnchorBone/bone]`），
+     证明这是脚本无关的通用检测，不是脚本名黑名单。
+- 遥测新增 `pair=`（成功成对补偿次数），`tools/read_perf.py` 支持五代日志格式。
+
+**是否需要重编译 DLL**：是，而且**两个 DLL 都要更新**：
+`dist/ProxyLayer.aux2`（137,216 B，MD5 `78b2b4ea…`）与 `dist/luaJIT.dll`（30,208 B，MD5 `dd09050c…`）。
+`luaJIT_real.dll` 是官方原版，**不要动**（MD5 `4ace3ea0…`）。两者已同时部署到真机。
+一键安装包 `ProxyLayer-v0.3.5-Installer.zip` 会自带新版代理 DLL；宿主更新覆盖 `luaJIT.dll` 后
+重跑 `install.bat` 即可恢复。**升级后需重启 AviUtl2**，两个后发图层都应贴合。
+
 ## v0.3.4 — 2026-11-17（图层错位修复：绝对像素锚点 + LuaProxy 尺寸误映射；Panel 置前）
 
 v0.3.3 修好性能后，第一次让 3.63 MPx 级素材真正被降采样，把两条此前被 `div=1`

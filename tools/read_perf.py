@@ -11,6 +11,7 @@ Four telemetry generations are recognised:
   v0.3.2             : L0:gate= keep= auto1=
   v0.3.3             : + cap= sub= big= maxw= d1mp=
   v0.3.4             : + veto= (blocked obj.w/h false mappings)
+  v0.3.5             : + pair= (successful (w,h) pair mappings from luaJIT.dll)
 
 Usage:
     python3 read_perf.py [path-to-ProxyLayer-perf.log] [--last N]
@@ -37,7 +38,8 @@ PAT = re.compile(
     r"(?:\s+L0:gate=(?P<gate>\d+) keep=(?P<keep>\d+) auto1=(?P<a1>\d+)"
     r"(?:\s+cap=(?P<cap>\d+) sub=(?P<sub>\d+) big=(?P<big>\d+)"
     r"\s+maxw=(?P<maxw>\d+) d1mp=(?P<d1mp>\d+)"
-    r"(?:\s+veto=(?P<veto>\d+))?)?)?"
+    r"(?:\s+veto=(?P<veto>\d+))?"
+    r"(?:\s+pair=(?P<pair>\d+))?)?)?"
 )
 
 
@@ -131,6 +133,9 @@ def main():
         vt = sum(r["veto"] or 0 for r in v33)
         print("  size-map collisions veto %6d  (v0.3.4: obj.w/h false mapping blocked)"
               % vt)
+        pr = sum(r["pair"] or 0 for r in v33)
+        print("  (w,h) pair compensations  %6d  (v0.3.5: only for real proxy layers)"
+              % pr)
         d1 = sum(r["d1"] or 0 for r in v33)
         print("  div=1 frames             %6d  (%5.1f%% of calls)" %
               (d1, 100.0 * d1 / c if c else 0))

@@ -97,7 +97,7 @@ extern "C" __declspec(dllexport) void InitializeConfig(CONFIG_HANDLE* config) {
 struct SizeMapEntry {
     double proxyW, proxyH, srcW, srcH;
     ULONGLONG tick;
-    bool allowW, allowH;   // false when that dimension is ambiguous
+    bool allowW, allowH;   // reserved (legacy single-dimension veto); unused in v0.3.5+
 };
 // Full-resolution (L0 / div=1) objects. luaJIT.dll's hook sees ONLY one
 // dimension at a time, so a proxy dimension that happens to equal an unrelated
@@ -111,7 +111,8 @@ struct NativeSizeEntry { double w, h; ULONGLONG tick; };
 static std::mutex                g_sizemu;
 static std::vector<SizeMapEntry> g_sizemap;
 static std::vector<NativeSizeEntry> g_nativesizes;
-static std::atomic<int>          g_size_veto{ 0 };  // telemetry
+static std::atomic<int>          g_size_veto{ 0 };  // legacy single-dim vetoes
+static std::atomic<int>          g_size_pair{ 0 };  // successful (w,h) pair mappings
 
 static void LogF(const wchar_t* fmt, ...);   // (also declared in Logging section)
 
@@ -127,66 +128,78 @@ static bool NativeDimActiveLocked(double d, bool isW) {
 
 static void RegisterSizeMap(int pw, int ph, int sw, int sh) {
     const ULONGLONG now = GetTickCount64();
-    bool vetoW = false, vetoH = false;
-    {
-        std::lock_guard<std::mutex> lk(g_sizemu);
-        vetoW = NativeDimActiveLocked((double)pw, true);
-        vetoH = NativeDimActiveLocked((double)ph, false);
-        if (vetoW || vetoH) g_size_veto.fetch_add(1);
-        for (auto& e : g_sizemap) {
-            if (e.proxyW == pw && e.proxyH == ph &&
-                e.srcW == sw && e.srcH == sh) {
-                e.tick = now; e.allowW = !vetoW; e.allowH = !vetoH;
-                return;
-            }
-        }
-        if (g_sizemap.size() >= 64) g_sizemap.erase(g_sizemap.begin());
-        g_sizemap.push_back({ (double)pw, (double)ph, (double)sw, (double)sh,
-                              now, !vetoW, !vetoH });
+    std::lock_guard<std::mutex> lk(g_sizemu);
+    for (auto& e : g_sizemap) {
+        if (e.proxyW == pw && e.proxyH == ph &&
+            e.srcW == sw && e.srcH == sh) { e.tick = now; return; }
     }
-    if (vetoW || vetoH) {
-        static std::atomic<int> announced{ 0 };
-        if (announced.fetch_add(1) < 4)
-            LogF(L"ProxyLayer: size-map collision veto proxy=%dx%d (%s) "
-                 L"- an unproxied layer shares that dimension",
-                 pw, ph, vetoW && vetoH ? L"w+h" : vetoW ? L"w" : L"h");
-    }
+    if (g_sizemap.size() >= 64) g_sizemap.erase(g_sizemap.begin());
+    g_sizemap.push_back({ (double)pw, (double)ph, (double)sw, (double)sh,
+                          now, true, true });
 }
 
 static void RegisterNativeSize(int w, int h) {
     if (w <= 0 || h <= 0) return;
     const ULONGLONG now = GetTickCount64();
     std::lock_guard<std::mutex> lk(g_sizemu);
-    bool found = false;
     for (auto& n : g_nativesizes) {
-        if (n.w == w && n.h == h) { n.tick = now; found = true; break; }
+        if (n.w == w && n.h == h) { n.tick = now; return; }
     }
-    if (!found) {
-        if (g_nativesizes.size() >= 256) g_nativesizes.erase(g_nativesizes.begin());
-        g_nativesizes.push_back({ (double)w, (double)h, now });
-    }
-    // A native size seen AFTER a map was registered must retroactively disable
-    // the colliding side of that map (render order is host-defined).
-    for (auto& e : g_sizemap) {
-        if (NativeDimActiveLocked(e.proxyW, true))  e.allowW = false;
-        if (NativeDimActiveLocked(e.proxyH, false)) e.allowH = false;
-    }
+    if (g_nativesizes.size() >= 256) g_nativesizes.erase(g_nativesizes.begin());
+    g_nativesizes.push_back({ (double)w, (double)h, now });
 }
 
+// LEGACY hook (luaJIT.dll older than v0.3.5). It sees only ONE dimension, so
+// reject any value known to be a full-resolution native dimension. Deliberately
+// conservative: no compensation is better than a wrong one that displaces a
+// mesh. New DLLs call ProxyLayer_MapSizePair() below instead.
 extern "C" __declspec(dllexport) int __cdecl
 ProxyLayer_MapSize(double cur, int isW, double* out) {
     if (!out || cur <= 0.0) return 0;
     const ULONGLONG now = GetTickCount64();
     std::lock_guard<std::mutex> lk(g_sizemu);
-    if (NativeDimActiveLocked(cur, isW != 0)) return 0;
+    if (NativeDimActiveLocked(cur, isW != 0)) {
+        g_size_veto.fetch_add(1);
+        return 0;
+    }
     for (auto it = g_sizemap.rbegin(); it != g_sizemap.rend(); ++it) {
         if (now - it->tick > 5000) continue;
-        if (isW ? !it->allowW : !it->allowH) continue;
         const double p = isW ? it->proxyW : it->proxyH;
         if (p == cur) { *out = isW ? it->srcW : it->srcH; return 1; }
     }
     return 0;
 }
+
+// v0.3.5: luaJIT.dll's hook cannot see an object id, but it CAN see the whole
+// (w,h) pair. Matching on a single dimension was fundamentally ambiguous:
+// proxyH 856 from a 5140x1712 layer collided with the native 628x856 hair layer.
+// Pair matching makes that collision impossible (both w AND h must match), and
+// the native-size veto stays as a second line of defence for older DLLs.
+extern "C" __declspec(dllexport) int __cdecl
+ProxyLayer_MapSizePair(double w, double h, double* outW, double* outH) {
+    if (!outW || !outH || w <= 0.0 || h <= 0.0) return 0;
+    const ULONGLONG now = GetTickCount64();
+    std::lock_guard<std::mutex> lk(g_sizemu);
+    // A registered full-resolution pair must NEVER be rewritten at all.
+    for (const auto& n : g_nativesizes) {
+        if (now - n.tick <= 30000 && n.w == w && n.h == h) return 0;
+    }
+    // NOTE: allowW/allowH are vetoes for the LEGACY single-dimension hook.
+    // They must NOT be applied here: a native layer can legitimately share ONE
+    // proxy dimension (628x856 vs proxy 2570x856). Pair matching already
+    // disambiguates, and applying the veto would wrongly disable compensation
+    // for the real proxy layer (OpenGlow / 光束_H must keep working).
+    for (auto it = g_sizemap.rbegin(); it != g_sizemap.rend(); ++it) {
+        if (now - it->tick > 5000) continue;
+        if (it->proxyW == w && it->proxyH == h) {
+            *outW = it->srcW; *outH = it->srcH;
+            g_size_pair.fetch_add(1);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 
 // "HitFilm-like" one-switch state: ON is remembered across host restarts and
 // across every project opened afterwards. A background watcher picks up any
@@ -516,6 +529,42 @@ static bool ReadSourcePath(EDIT_SECTION* e, EFFECT_HANDLE eff,
     return false;
 }
 
+// v0.3.5: register a REAL source dimension for every image object we see while
+// holding the EDIT_SECTION lock. Objects deliberately left unconverted (absolute
+// anchor protection, whitelist exclusions, manual opt-outs) never reach the
+// render path, so RegisterNativeSize() there can never see them - and the
+// luaJIT proxy hook is GLOBAL, so an unregistered native dimension could be
+// rewritten by an unrelated layer's proxy dimension. Path -> size is cached,
+// but RegisterNativeSize() is called on every scan to refresh the 30 s TTL.
+static std::unordered_map<std::string, std::pair<int, int>> g_native_size_cache;
+static std::mutex g_native_cache_mu;
+static void RegisterNativeImageSize(EDIT_SECTION* e, EFFECT_HANDLE eff) {
+    if (!e || !eff || !e->get_effect_item_value) return;
+    // Only UNCONVERTED objects matter here: converted ones are covered by the
+    // render-path RegisterNativeSize() call, and their item is named 画像ファイル.
+    LPCWSTR en = e->get_effect_name ? e->get_effect_name(eff) : nullptr;
+    if (en && std::wcscmp(en, L"ProxyLayer") == 0) return;
+    std::string path;
+    static const wchar_t* kNativeItems[] = { L"ファイル", L"文件" };
+    for (LPCWSTR it : kNativeItems) {
+        LPCSTR v = e->get_effect_item_value(eff, it);
+        if (v && *v) { path = v; break; }
+    }
+    if (path.empty() || !IsImagePath(path)) return;  // never decode audio/OBJ/video
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_native_cache_mu);
+        auto it = g_native_size_cache.find(path);
+        if (it != g_native_size_cache.end()) { w = it->second.first; h = it->second.second; }
+    }
+    if (w <= 0 || h <= 0) {
+        if (!QueryImageSize(path, &w, &h)) return;
+        std::lock_guard<std::mutex> lk(g_native_cache_mu);
+        g_native_size_cache[path] = { w, h };
+    }
+    RegisterNativeSize(w, h);
+}
+
 // ---------------------------------------------------------------------------
 // Timeline object name.
 // 画像ファイル shows the FILE NAME as its "standard" object name; our
@@ -653,20 +702,26 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
 // is the only correct answer. Detect by VALUE SHAPE, never by script name.
 static const wchar_t* kAnchorItems[] = {
     L"bone", L"anchors", L"anchor", L"points", L"point", L"vertex", L"vertices",
-    L"control_points", L"ctrl_points", L"アンカー", L"座標", L"頂点", L"基準点"
+    L"control_points", L"ctrl_points", L"アンカー", L"座標", L"頂点", L"基準点",
+    L"制御点", L"基准点", L"锚点", L"锚点坐标"
 };
+// Any even-length tuple of absolute PIXEL coordinates (2, 3 or 4 anchor
+// points) with mixed signs and a large magnitude. Script-name agnostic: a new
+// third-party deformation script is covered automatically.
+// Deliberately strict enough to reject track values (all >= 0), colour tuples,
+// camera state (all <= 0) and frame-marker lists.
 static bool IsAbsoluteAnchorTuple(const char* v) {
     if (!v || !*v) return false;
     int n = 0;
     bool negative = false, positive = false, large = false;
     const char* q = v;
-    while (*q && n <= 6) {
+    while (*q) {
         char* end = nullptr;
         const double d = std::strtod(q, &end);
         if (end == q) return false;
-        if (++n > 6) return false;
+        if (++n > 8) return false;
         if (d <= -64.0)  negative = true;
-        if (d >=  64.0)  positive = true;   // excludes display.camera=<neg,...,0,0,0>
+        if (d >=  64.0)  positive = true;
         if (std::fabs(d) >= 128.0) large = true;
         q = end;
         while (*q == ' ' || *q == '\t') ++q;
@@ -674,9 +729,19 @@ static bool IsAbsoluteAnchorTuple(const char* v) {
         if (*q == '\r' || *q == '\0') break;
         return false;
     }
-    return n == 6 && negative && positive && large;
+    return (n == 4 || n == 6 || n == 8) && negative && positive && large;
 }
-static bool AliasHasAnchor(const char* alias) {
+// Host-side bookkeeping keys that can look like coordinate tuples but are not
+// script anchor parameters. Everything else is inspected by VALUE SHAPE.
+static const char* kNonAnchorKeys[] = { "display.", "frame", "undo", "view" };
+static bool IsNonAnchorKey(const std::string& key) {
+    for (const char* p : kNonAnchorKeys) {
+        const size_t n = std::strlen(p);
+        if (key.compare(0, n, p) == 0) return true;
+    }
+    return false;
+}
+static bool AliasHasAnchor(const char* alias, std::string* evidence) {
     if (!alias || !*alias) return false;
     const char* p = alias;
     while (*p) {
@@ -685,23 +750,39 @@ static bool AliasHasAnchor(const char* alias) {
         p = e ? e + 1 : p + std::strlen(p);
         const size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
-        if (line.compare(0, 8, "display.") == 0) continue;  // host state, not a script item
-        if (IsAbsoluteAnchorTuple(line.c_str() + eq + 1)) return true;
+        if (IsNonAnchorKey(line.substr(0, eq))) continue;
+        if (IsAbsoluteAnchorTuple(line.c_str() + eq + 1)) {
+            if (evidence) *evidence = line.substr(0, eq);
+            return true;
+        }
     }
     return false;
 }
 // Returns true when this OBJECT (not just its layer) must stay full-res.
+// `evidence` receives the effect/item name that triggered it, so the log shows
+// exactly which script was caught - proof this is not a name blacklist.
 static bool ObjectHasAbsoluteAnchor(EDIT_SECTION* e, OBJECT_HANDLE o,
-                                    const EFFECT_HANDLE* list, int n) {
+                                    const EFFECT_HANDLE* list, int n,
+                                    std::string* evidence) {
     for (int i = 0; i < n; ++i) {
+        LPCWSTR en = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
         for (LPCWSTR item : kAnchorItems) {
             LPCSTR v = e->get_effect_item_value(list[i], item);
-            if (IsAbsoluteAnchorTuple(v)) return true;
+            if (IsAbsoluteAnchorTuple(v)) {
+                if (evidence) *evidence = std::string(
+                    en ? WideToUtf8(en) : "?") + "/" + WideToUtf8(item);
+                return true;
+            }
         }
     }
     // Fallback for third-party scripts that used a different item name:
     // the object alias is INI-like text containing every item value.
-    return (e->get_object_alias) && AliasHasAnchor(e->get_object_alias(o));
+    std::string key;
+    if ((e->get_object_alias) && AliasHasAnchor(e->get_object_alias(o), &key)) {
+        if (evidence) *evidence = "alias:" + key;
+        return true;
+    }
+    return false;
 }
 struct ProtectedLayers {
     std::unordered_set<int> layers;
@@ -749,6 +830,12 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
       ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
             EFFECT_HANDLE list[64] = {};
             const int n = e->get_effect_list(o, list, 64);
+            // The luaJIT hook is GLOBAL: it rewrites obj.w/obj.h for EVERY object,
+            // including ones we deliberately leave unconverted. Register their
+            // real dimensions here so no proxy dimension can ever be mistaken
+            // for a native one (v0.3.5 fix).
+            for (int i = 0; i < n; ++i)
+                RegisterNativeImageSize(e, list[i]);
             bool isImageObject = false, hasCustomEffect = false;
             for (int i = 0; i < n; ++i) {
                 LPCWSTR cn = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
@@ -759,17 +846,19 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
             }
             // Alias serialisation is relatively expensive (this pass runs on
             // the UI thread), so only inspect objects with a real script.
+            std::string evidence;
             if (isImageObject && hasCustomEffect &&
-                ObjectHasAbsoluteAnchor(e, o, list, n)) {
+                ObjectHasAbsoluteAnchor(e, o, list, n, &evidence)) {
                 out.objects.insert(o);
-                static std::unordered_set<OBJECT_HANDLE> announced;
+                static std::unordered_set<std::string> announced;
                 static std::mutex annMu;
                 bool first = false;
                 { std::lock_guard<std::mutex> lk(annMu);
-                  first = announced.insert(o).second; }
+                  first = announced.insert(evidence).second; }
                 if (first)
-                    LogF(L"AutoProxy: absolute-pixel anchor on object -> "
-                         L"keeping full resolution (size-dependent script)");
+                    LogF(L"AutoProxy: absolute-pixel anchor detected in [%hs] "
+                         L"-> keeping full resolution (script-agnostic)",
+                         evidence.c_str());
             }
             for (int i = 0; i < n; ++i) {
                 LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
@@ -858,8 +947,13 @@ static int ConvertScene(EDIT_SECTION* e, bool enable) {
         }
         ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
             if (enable && prot.objects.count(o)) {
-                // A downstream script uses absolute-pixel anchors. The proxy
-                // texture would break its mesh regardless of obj.w/h mapping.
+                // A downstream script uses absolute-pixel anchors. CONVERT the
+                // object (so it enters our render path and registers its real
+                // size), then force L0 so the texture stays full resolution.
+                // v0.3.4 wrongly skipped the conversion entirely, which left
+                // these objects invisible to RegisterNativeSize() - the
+                // luaJIT hook is global and could then rewrite their obj.w/h.
+                changed += ConvertObject(e, o, true);
                 changed += SetKeepOriginal(e, o, true);
                 if (EnsureDisplayName(e, o)) ++changed;
                 return;
@@ -2195,7 +2289,7 @@ static void PerfFlushLocked(const char* tag) {
         "[%02u/%02u %02u:%02u:%02u] %s calls=%d win=%.2fs fast=%d slow=%d "
         "filter_avg=%.3fms filter_sum=%.1fms decode_avg=%.3fms decode_max=%.1fms "
         "div[1]=%d [2]=%d [4]=%d [8]=%d [16]=%d [32]=%d [64]=%d "
-        "L0:gate=%d keep=%d auto1=%d cap=%d sub=%d big=%d maxw=%d d1mp=%d veto=%d\n",
+        "L0:gate=%d keep=%d auto1=%d cap=%d sub=%d big=%d maxw=%d d1mp=%d veto=%d pair=%d\n",
         st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, tag,
         g_perf.calls, win, g_perf.fast, g_perf.slow,
         g_perf.sum_total / g_perf.calls, g_perf.sum_total,
@@ -2207,7 +2301,8 @@ static void PerfFlushLocked(const char* tag) {
         g_stat_gated.exchange(0), g_stat_keep.exchange(0), g_stat_div1.exchange(0),
         g_stat_cap.exchange(0), g_stat_subscene.exchange(0),
         g_stat_scene_big.exchange(0), g_stat_scene_maxw.exchange(0),
-        g_stat_div1_maxmp.exchange(0), g_size_veto.exchange(0));
+        g_stat_div1_maxmp.exchange(0), g_size_veto.exchange(0),
+        g_size_pair.exchange(0));
     PerfLogLine(line);
     g_perf.calls = g_perf.fast = g_perf.slow = 0;
     g_perf.sum_total = g_perf.sum_decode = g_perf.max_decode = 0;

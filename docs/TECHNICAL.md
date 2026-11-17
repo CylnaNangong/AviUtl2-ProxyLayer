@@ -127,6 +127,47 @@ AUTO v3 修好性能后，3.63 MPx 级素材第一次真正被降采样，暴露
 兜底第三方脚本（跳过 `display.*`，并要求存在正数以排除 `display.camera=<负,...,0,0,0>`）。
 命中的对象逐对象置 `このレイヤーは元画像を維持=1`，不影响调色/抠图等普通效果。
 
+### 5.2a 为什么 v0.3.4 的 veto 没生效（v0.3.5 复盘）
+
+v0.3.4 的自动保护对命中的对象只调 `SetKeepOriginal()` 就 `return`，跳过了 `ConvertObject()`。
+但 `SetKeepOriginal()` 只作用于**已经带 ProxyLayer 效果**的对象，所以这些对象保持原生
+`画像ファイル`，**完全不进插件渲染路径**。真机日志证明：
+
+```
+10:43 会话：628x856 在 ACTIVE/PROBE 中出现 0 次；keep=0；veto=0
+```
+
+`RegisterNativeSize()` 挂在 `func_proc_video()` 的 `common()` 里，从未为 628×856 调用，
+veto 表是空的。而 `luaJIT.dll` 的 hook 是**全局**的，主合成里 `5140×1712 @div=2` 照常注册
+`proxyH 856 → srcH 1712`，南宫颜后发的 `obj.h=856` 仍被改写成 1712，
+`h2` 从 428 变 856，网格上移。**保护生效 ≠ 映射安全**，这是两个不同的作用域。
+
+### 5.2b 成对 (w,h) 匹配（v0.3.5，治本）
+
+LuaProxy 的 hook 拿不到对象 ID，但能看到**完整的尺寸对**。宿主按 `obj.w` → `obj.h`
+相邻两次 `lua_setfield` 写入，所以：
+
+1. `w` 到来时缓冲原始值（按线程存于 `TlsAlloc`；不用 `__declspec(thread)`，因为宿主可能
+   `LoadLibrary` 动态加载 DLL，隐式 TLS 有崩溃前科）。
+2. `h` 到来时调用 `ProxyLayer_MapSizePair(w, h, &outW, &outH)`；插件在 `g_sizemap` 里
+   要求 **proxyW == w 且 proxyH == h** 才返回源尺寸。
+3. 命中则先用真实 `lua_setfield(L, absIdx, "w")` 修正已提交的 `w`（`absIdx` 由
+   `lua_gettop()` 换算成绝对索引，避免 push 后相对索引失效），再 `lua_pushnumber` +
+   `lua_replace(-2)` 替换栈顶 `h` 值。用真实 API 而非本 DLL 的 wrapper，不会递归。
+
+`(628,856)` 与 `(2570,856)` 只共享一个维度 → 不匹配 → 保持原值，南宫颜后发复位。
+真实代理层 `(2570,856) → (5140,1712)`、`(1250,782) → (10000,6250)` 仍正常补偿，
+OpenGlow / 光束_H 不受影响。
+
+**兼容性**：插件仍导出旧的 `ProxyLayer_MapSize()`；新版 DLL 找不到 `MapSizePair` 时回退到
+单维度逻辑。旧版 DLL 调 `MapSize()` 时插件走保守的 native-size veto。因此两个 DLL 可分别升级，
+任意组合都不会崩。宿主更新覆盖 `luaJIT.dll` 后重跑 `install.bat` 即可恢复新版代理。
+
+**插件侧配套**：受保护对象改为先 `ConvertObject()` 再 `SetKeepOriginal(true)`（进入渲染路径、
+强制 L0）；扫描阶段 `RegisterNativeImageSize()` 对所有未转换图像对象登记真实尺寸并刷新 TTL，
+为旧版单维度 hook 提供精确兜底。锚点检测放宽为 4/6/8 数值元组，并按键名前缀排除
+`display.*` / `frame`，日志输出实际命中的效果/参数名。
+
 ### 5.2 LuaProxy 单维度映射的碰撞与 veto（v0.3.4）
 
 `luaJIT.dll` 转发的 `lua_setfield` 钩子每次只看见**一个**维度，因此
