@@ -5,7 +5,7 @@
 **AviUtl ExEdit2 用「プレビュー用プロキシレイヤー」ネイティブプラグイン**  
 スイッチを 1 つ入れるだけで、プロジェクト全体の大きな静止画像が低解像度プロキシに置き換わり、再生がすぐに軽くなります。**出力時は自動的に元画像へ戻る**ため、書き出した映像の画質は一切変わりません。変換後もタイムラインには元のファイル名が表示され、従来の「画像ファイル」と同じ感覚で扱えます。
 
-`ProxyLayer.aux2 v0.3.5` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.6` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 言語 / Language:** &nbsp; **[简体中文 (Chinese)](../README.md)** &nbsp;|&nbsp; **日本語** &nbsp;|&nbsp; **[English](README_en.md)**
 

@@ -5,7 +5,7 @@
 **A native "preview proxy layer" plugin for AviUtl ExEdit2.**  
 Flip one switch and every large still image in the whole project is swapped for a downscaled proxy, so playback becomes smooth immediately. **Exports always restore the original image**, so the delivered video is bit-for-bit unaffected. After conversion the timeline still shows the source file name, so it feels exactly like the built-in “Image File” object.
 
-`ProxyLayer.aux2 v0.3.5` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.6` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 Language:** &nbsp; **[简体中文 (Chinese)](../README.md)** &nbsp;|&nbsp; **[日本語 (Japanese)](README_ja.md)** &nbsp;|&nbsp; **English**
 

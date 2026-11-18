@@ -7,7 +7,10 @@ AviUtl2 language packs are plain INI files. Three sections matter here:
                       the Default language IS Japanese, so it needs none)
   [Panel]             settings-window / menu strings, read at runtime through
                       CONFIG_HANDLE::get_language_text(handle, L"Panel", key)
-                      (zh / en only; the DLL falls back to Japanese)
+                      REQUIRED IN EVERY PACK INCLUDING Default (Japanese text
+                      there). get_language_text() returns the key itself when
+                      undefined, so a missing key shows "title"/"ok" verbatim;
+                      the DLL also guards against that, but CI should catch it.
   [Tips.ProxyLayer]   official hover tooltips - effect.name = effect description,
                       then one line per item key. See docs.aviutl2.jp and the
                       header comment of the host's own 简体中文.aul2.
@@ -175,16 +178,22 @@ def main() -> int:
                     problems.append(f"must NOT be translated (plugin name): {k!r}")
                 elif k not in required:
                     warnings.append(f"stale display key: {k!r}")
-            # 3) panel / menu strings
-            panel = sections.get(PANEL_SECTION)
-            if panel is None:
-                warnings.append(f"no [{PANEL_SECTION}] section (Japanese fallback will be used)")
-            else:
-                for k in PANEL_KEYS:
-                    if k not in panel:
-                        warnings.append(f"missing Panel key {k!r} (Japanese fallback)")
         elif entries:
             warnings.append("Default pack has display names (they are unnecessary)")
+
+        # 3) panel / menu strings - REQUIRED IN EVERY PACK, including Default.
+        # get_language_text() returns the KEY ITSELF when a key is undefined
+        # (config2.h:36), so a missing [Panel] key shows raw ASCII identifiers
+        # like "title"/"ok" in the UI rather than falling back. Default is
+        # Japanese, so its [Panel] values are Japanese text (no display-name
+        # translations needed, but runtime C++ strings still are).
+        panel = sections.get(PANEL_SECTION)
+        if panel is None:
+            problems.append(f"missing [{PANEL_SECTION}] section (raw keys would be displayed)")
+        else:
+            for k in PANEL_KEYS:
+                if k not in panel:
+                    problems.append(f"missing Panel key {k!r} (raw key would be displayed)")
 
         status = "[OK]" if not problems else "[X] "
         print(f"{status} {path.name}: "

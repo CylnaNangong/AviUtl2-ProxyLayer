@@ -5,7 +5,7 @@
 **给 AviUtl ExEdit2 的「预览代理图层」原生插件**  
 打开一个开关，整个工程里的大尺寸静态图像自动换成低分辨率代理，播放立刻变流畅；**导出时自动还原原图**，成片画质完全不受影响。转换后时间轴仍显示源文件名，使用体验和原来的「画像ファイル」一致。
 
-`ProxyLayer.aux2 v0.3.5` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
+`ProxyLayer.aux2 v0.3.6` &nbsp;|&nbsp; `AviUtl ExEdit2 v2.1.x` &nbsp;|&nbsp; `MIT License`
 
 **🌐 语言 / Language:** &nbsp; **简体中文** &nbsp;|&nbsp; **[日本語 (Japanese)](docs/README_ja.md)** &nbsp;|&nbsp; **[English](docs/README_en.md)**
 

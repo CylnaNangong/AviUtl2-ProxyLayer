@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.3.6 — 2026-11-18（两个真机 bugfix：Default 面板文案、OFF 还原链接损坏）
+
+用户报告两个问题，都在真机复现并有决定性证据：
+
+### ① Default（日语）环境下设置面板只显示占位符
+
+截图显示窗口标题 `title`、复选框 `switch`、状态 `status`、按钮 `ok` / `cancel` ——
+全是 ASCII 键名，而不是日语。
+
+**根因**：SDK `config2.h:36` 明确规定
+`get_language_text()` 在键未定义时返回**参数 text 的指针本身**，不是 `nullptr`：
+
+```
+戻り値 : 定義されているテキストへのポインタ
+         (未定義の場合は引数のテキストのポインタが返却されます)
+```
+
+`Default.ProxyLayer.aul2` 只有 `[Tips.ProxyLayer]`，刻意没有 `[Panel]` 段
+（Default 就是日语，显示名无需翻译）。于是 `T()` 里旧的 `if (t && *t) return t;`
+把键名当成译文返回，C++ 里写好的**日语硬编码回退永远走不到**。
+中文 / 英文包因为自带 `[Panel]` 段，一直正常，所以这个 bug 只在 Default 下暴露。
+
+修复（两层，冗余保险）：
+
+- `T()` 同时按**指针身份**和**内容**判定「返回值 == key」即视为未定义，回退日语。
+  这样即便某个第三方语言包缺键、或语言包未更新，也不会再把键名显示出来。
+- **`Default.ProxyLayer.aul2` 新增 `[Panel]` 日语段**（12 键，文案与 C++ 回退逐字一致），
+  让宿主直接查到日语译文。`tools/check_aul2.py` 相应改为**对所有包（含 Default）强制检查
+  `[Panel]` 12 键**，缺失判为 failure 而非 warning，防止回归。
+
+### ② 打开开关转换、关掉开关还原后，图像文件链接损坏
+
+用户提供的 `aps.aup2` 里，还原后的 `effect.name=画像ファイル` 正确回来了，
+但 `ファイル=` 成了乱码（`\x08bip\x7f`、`q8*\x14\x02` 等堆内存字节），共 5 处。
+GitHub diff 同时显示时间轴物件名 `Arona_02.png` 被正确清除 —— 一正一反正好锁定位置。
+
+**根因**：SDK `plugin2.h:542` 明确规定 `get_effect_item_value()` 返回的 `LPCSTR` 有效期：
+
+```
+※次に同一スレッドで文字列返却の関数を使うかコールバック処理の終了まで有効
+```
+
+OFF 还原分支取到 `v = get_effect_item_value(list[i], L"画像ファイル")` 后，
+又连续调用两次 `get_effect_item_value`（读 `元のエフェクト名` / `元のファイル項目名`）、
+再 `create_effect()`，最后才把 `v` 传给 `set_effect_item_value(ne, ..., v)` ——
+此时 `v` 指向的宿主临时缓冲早已被复用，写进工程的自然是被覆盖后的堆字节。
+`base`（时间轴文件名）因为在 `v` 刚取得时就立即算好，所以不受影响，这解释了 diff 的不对称。
+
+**系统性修复**（不只补一处）：新增 `CopyItem()` / `CopyEffectName()` / `CopyObjectName()`
+三个 owning-copy helper，把全文件里所有跨 SDK 调用使用的字符串返回值都改为**取得即复制**：
+
+| 位置 | 旧问题 |
+| --- | --- |
+| `ConvertObject` OFF（本次 bug） | `v` 跨 2 次读取 + `create_effect` 后使用 |
+| `ConvertObject` ON | `nm` 在 `ReadSourcePath()` 之后仍用于白名单判定 / 写元数据 |
+| `SafetyCheckThunk` | `元の幅` 与 `元の高さ` 连取两个裸指针，第二次让第一个失效 |
+| `ObjectHasAbsoluteAnchor` / `CollectProtectedLayers` | `en` / `nm` / `v` 在循环内多次读取后复用 |
+| `EnsureDisplayName` / `SetKeepOriginal` / `RegisterNativeImageSize` | 同类短生命周期指针 |
+
+现在这类 bug 由 helper 在结构上不可能发生。`画像ファイル` 效果名与
+`元のエフェクト名` / `元のファイル項目名` 元数据格式未变，旧工程兼容。
+
+**验证**：`ProxyLayer.aux2` 重编译（141K，9 个导出齐全，含 `ProxyLayer_MapSizePair` /
+`InitializeConfig`）；真机隔离 runtime 跑 ON→OFF 往返 + 保存，逐字节比对 `ファイル=`。
+`luaJIT.dll` 转发代理**未改动**，无需替换。
+
+> ⚠️ 已损坏的工程无法自动修复：乱码字节写进 `.aup2` 后原路径信息已丢失。
+> 需要从备份 / Git 历史恢复，或手动重新指定素材。v0.3.6 只保证**之后**的还原不再损坏。
+
 ## 文档补充 — 2026-11-18（无代码改动，DLL 不变）
 
 用户实测发现：`OpenGlow` / `光束_H` 在参数完全相同时，**代理态与原图态的预览有细微差异**

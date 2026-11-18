@@ -265,12 +265,62 @@ pair(6251,4501) no-match                                  # 原图态：原寸�
 **v0.3 起内部键名统一为日语**（AviUtl2 默认语言 `Default`）。这是与参考仓库 VolumetricLight3D 一致的社区惯例：插件编译进去的 `FILTER_ITEM_*` 名字就是宿主默认语言，其他语言靠 `.aul2` 差异包把显示名翻过去。
 
 - 宿主按当前语言加载 `Language/<语言名>.*.aul2` 差异文件；真机语言列表只有 `Default` / `简体中文` / `English` / `Deutsch` / `community_*`，**没有「日本語」** —— `Default` 就是日语，且只读取 `Default.*.aul2`。官方规则写在宿主自带 `简体中文.aul2` 的头部注释里。
-- 当前三个语言包：`Default.ProxyLayer.aul2`（只放日语 `[Tips.ProxyLayer]` 悬浮提示，默认语言无需翻译显示名）、`简体中文.*` 与 `English.*`（显示名 + `[Panel]` + TIPS）。
+- 当前三个语言包：`Default.ProxyLayer.aul2`（日语 `[Tips.ProxyLayer]` 悬浮提示 + **v0.3.6 起新增日语 `[Panel]`**，默认语言无需翻译显示名）、`简体中文.*` 与 `English.*`（显示名 + `[Panel]` + TIPS）。
 - **v0.3.1**：删掉参数面板顶部那行 `FILTER_ITEM_SEPARATOR` 长提示，改用官方 `[Tips.ProxyLayer]` 悬浮气泡（规则见宿主 `简体中文.aul2` 头注释 / docs.aviutl2.jp）。`effect.name` 写效果说明，其余 12 个键写参数说明，值里 `\n` 换行；真机沙箱实测中文气泡正常弹出。
 - **实测**（隔离沙箱，三轮）：`日本語.ProxyLayer.aul2` 放在 `Language=`（Default）下完全不生效，参数仍显示旧中文；同一文件改名 `Default.ProxyLayer.aul2` 后 `档位→プロキシ倍率` 等全部生效；三包并存且 `Language=简体中文` 时中文包生效、不被 Default 日文包污染。这促成了"直接把内部键改成日语、不再需要日文包"的决定。
 - `.aul2` 只改**显示**，不改 `.aup2` 存储键。键必须是源码字符串的逐字拷贝；差一个字符静默回退，所以 `tools/check_aul2.py` 从 `src/ProxyLayer.cpp` 解析词条并在 CI 校验覆盖率（当前 12 键 × 2 包）。
 - **绝不翻译内部名 `ProxyLayer`**：`create_effect()` / `get_effect_name()` 以及 9 处 `wcscmp(..., L"ProxyLayer")` 依赖它；效果名与菜单根名固定英语。
 - **菜单 / 设置窗口跟随语言**：导出 `InitializeConfig(CONFIG_HANDLE*)`（SDK 保证在 `InitializePlugin()` 之前调用）保存句柄，用 `get_language_text(handle, L"Panel", key)` 读取各语言包的 `[Panel]` 段；缺包或缺键时回退日语。菜单在启动时注册，所以切换语言需重开宿主；面板每次显示时重新取，立即生效。
+
+### 9.1 `get_language_text()` 的「返回键名」陷阱（v0.3.6）
+
+`config2.h:36` 的官方契约（容易读漏）：
+
+```
+戻り値 : 定義されているテキストへのポインタ
+         (未定義の場合は引数のテキストのポインタが返却されます)
+```
+
+也就是**键未定义时返回的是参数 `text` 指针本身，不是 `nullptr`**。
+因此早期 `T()` 写成 `if (t && *t) return t;` 时，Default（日语）环境下
+`Default.ProxyLayer.aul2` 没有 `[Panel]` 段 → 宿主把 `L"title"` / `L"ok"` 原样交回来 →
+窗口直接显示 `title` / `switch` / `status` / `ok` / `cancel`，C++ 里写好的日语硬编码回退
+**永远走不到**。中文 / 英文包自带 `[Panel]`，所以这个 bug 只在 Default 下暴露。
+
+v0.3.6 两层修复：
+
+1. `T()` 同时按**指针身份**（`t != key`）和**内容**（`wcscmp(t, key) != 0`）判定
+   「返回值就是键名」→ 视为未定义，回退日语。这样第三方语言包缺键、
+   或用户没更新语言包，也不会再把 ASCII 标识符显示到界面上。
+2. `Default.ProxyLayer.aul2` 补齐 `[Panel]` 12 键日语段（文案与 C++ 回退逐字一致），
+   让宿主直接查到译文。`tools/check_aul2.py` 改为**对所有包（含 Default）强制检查
+   `[Panel]` 12 键**，缺失由 warning 升为 failure，防止回归。
+
+> 注意区分：`[ProxyLayer]` 显示名段在 Default 包里仍然**不需要**
+> （内部键名本身就是日语），需要翻译的只有运行时 C++ 字符串用的 `[Panel]`。
+
+### 9.2 编辑节字符串返回值的生命周期（v0.3.6 数据损坏修复）
+
+`plugin2.h:542` / `:207` 对 `get_effect_item_value()` 与 `get_object_alias()` 规定：
+
+```
+※次に同一スレッドで文字列返却の関数を使うかコールバック処理の終了まで有効
+```
+
+返回的 `LPCSTR` 是宿主的**临时缓冲**，只活到「同线程下一次调用返回字符串的函数」。
+`get_effect_name()` / `get_object_name()` 同样寿命很短。旧代码在 OFF 还原分支里
+把 `画像ファイル` 的路径裸指针跨过两次元数据读取和 `create_effect()` 才使用，
+写进工程的就成了被复用后的堆字节（`\x08bip\x7f` 之类），链接永久损坏。
+
+修复：新增 `CopyItem()` / `CopyEffectName()` / `CopyObjectName()`，所有此类返回值
+**取得即复制**到 `std::string` / `std::wstring`。审计覆盖
+`ConvertObject`（ON/OFF）、`EnsureDisplayName`、`RegisterNativeImageSize`、
+`ObjectHasAbsoluteAnchor`、`CollectProtectedLayers`、`SetKeepOriginal`、
+`SafetyCheckThunk`（`元の幅` 与 `元の高さ` 连取两个裸指针，第二次会让第一个失效）。
+日志里 `%hs` 用的值也全部改为 owning copy 的 `.c_str()`。
+
+**这是结构性问题，不是单点的**：以后新增任何读取编辑节字符串的代码，
+都必须走这三个 helper，不要直接持有 `LPCSTR`。
 
 > **破坏性变更**：v0.2.x 保存的转换态工程含中文键（`档位` / `原始宽` / `原始效果名` / `原始文件名项`），v0.3 不再识别。元数据丢失会让 OFF 还原退回 `画像ファイル`（音频 / 3D 对象可能被错误还原）。因为当时还没有真实用户工程保存转换态，未在 DLL 内做旧键别名兼容；升级前先 OFF 还原或重新转换。
 

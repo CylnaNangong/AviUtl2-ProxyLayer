@@ -59,12 +59,18 @@ static std::mutex        g_mu;
 // display packs cannot reach them. The official CONFIG_HANDLE solves this:
 // get_language_text() looks up [Panel] in the current language file.
 // Keys are short ASCII identifiers (a wording tweak never breaks a pack);
-// the fallback is Japanese, i.e. the host default language. Default-language
-// users therefore need NO display pack at all.
+// the fallback is Japanese, i.e. the host default language.
+//
+// v0.3.6: config2.h:36 states that when a key is UNDEFINED the host returns
+// "the pointer to the argument text" - i.e. it hands back our key string, NOT
+// nullptr. The old `if (t && *t) return t;` therefore displayed the literal
+// ASCII keys ("title", "switch", "ok" ...) under Default (= Japanese), which
+// has no [Panel] section, and the Japanese fallback was unreachable. Detect
+// that case by both pointer identity and content, then fall back to Japanese.
 static std::wstring T(LPCWSTR key, LPCWSTR ja) {
     if (g_config && g_config->get_language_text) {
         LPCWSTR t = g_config->get_language_text(g_config, L"Panel", key);
-        if (t && *t) return t;
+        if (t && *t && t != key && std::wcscmp(t, key) != 0) return t;
     }
     return ja;
 }
@@ -519,12 +525,40 @@ static bool QueryImageSize(const std::string& pathUtf8, int* w, int* h) {
     *w = img.width; *h = img.height;
     return true;
 }
+// SDK contract (plugin2.h:542, 207): pointers returned by
+// get_effect_item_value() / get_object_alias() are valid ONLY until the next
+// call on the same thread that returns a string, or until the edit callback
+// ends. get_effect_name()/get_object_name() have similarly short lifetimes.
+// ALWAYS copy into an owning std::string/std::wstring before touching any
+// other SDK function.
+//
+// v0.3.6: the OFF restore used to hold a raw LPCSTR from 画像ファイル across
+// two metadata reads + create_effect(), then wrote the freed buffer into
+// ファイル= - the saved project ended up with heap garbage like "\x08bip\x7f"
+// and every image link was broken. These helpers make that class of bug
+// impossible by construction.
+static std::string CopyItem(EDIT_SECTION* e, EFFECT_HANDLE eff, LPCWSTR item) {
+    if (!e || !e->get_effect_item_value) return std::string();
+    LPCSTR v = e->get_effect_item_value(eff, item);
+    return (v && *v) ? std::string(v) : std::string();
+}
+static std::wstring CopyEffectName(EDIT_SECTION* e, EFFECT_HANDLE eff) {
+    if (!e || !e->get_effect_name) return std::wstring();
+    LPCWSTR v = e->get_effect_name(eff);
+    return v ? std::wstring(v) : std::wstring();
+}
+static std::wstring CopyObjectName(EDIT_SECTION* e, OBJECT_HANDLE o) {
+    if (!e || !e->get_object_name) return std::wstring();
+    LPCWSTR v = e->get_object_name(o);
+    return v ? std::wstring(v) : std::wstring();
+}
+
 static bool ReadSourcePath(EDIT_SECTION* e, EFFECT_HANDLE eff,
                            std::string* out, LPCWSTR* itemUsed = nullptr) {
     static const wchar_t* kItems[] = { L"ファイル", L"文件", L"画像ファイル", L"画像文件" };
     for (const wchar_t* name : kItems) {
-        LPCSTR v = e->get_effect_item_value(eff, name);
-        if (v && *v) { *out = v; if (itemUsed) *itemUsed = name; return true; }
+        const std::string v = CopyItem(e, eff, name);
+        if (!v.empty()) { *out = v; if (itemUsed) *itemUsed = name; return true; }
     }
     return false;
 }
@@ -542,13 +576,13 @@ static void RegisterNativeImageSize(EDIT_SECTION* e, EFFECT_HANDLE eff) {
     if (!e || !eff || !e->get_effect_item_value) return;
     // Only UNCONVERTED objects matter here: converted ones are covered by the
     // render-path RegisterNativeSize() call, and their item is named 画像ファイル.
-    LPCWSTR en = e->get_effect_name ? e->get_effect_name(eff) : nullptr;
-    if (en && std::wcscmp(en, L"ProxyLayer") == 0) return;
+    const std::wstring en = CopyEffectName(e, eff);
+    if (!en.empty() && std::wcscmp(en.c_str(), L"ProxyLayer") == 0) return;
     std::string path;
     static const wchar_t* kNativeItems[] = { L"ファイル", L"文件" };
     for (LPCWSTR it : kNativeItems) {
-        LPCSTR v = e->get_effect_item_value(eff, it);
-        if (v && *v) { path = v; break; }
+        const std::string v = CopyItem(e, eff, it);
+        if (!v.empty()) { path = v; break; }
     }
     if (path.empty() || !IsImagePath(path)) return;  // never decode audio/OBJ/video
     int w = 0, h = 0;
@@ -584,17 +618,16 @@ static std::wstring FileBaseNameWide(const std::string& p) {
 static bool EnsureDisplayName(EDIT_SECTION* e, OBJECT_HANDLE o) {
     if (!e || !e->get_object_name || !e->set_object_name ||
         !e->get_effect_list || !e->get_effect_item_value) return false;
-    LPCWSTR cur = e->get_object_name(o);
-    const bool standard = (!cur || !*cur ||
-                           std::wcscmp(cur, L"ProxyLayer") == 0);
+    const std::wstring cur = CopyObjectName(e, o);
+    const bool standard = (cur.empty() || cur == L"ProxyLayer");
     if (!standard) return false;            // custom name -> leave it alone
     EFFECT_HANDLE list[64] = {};
     const int n = e->get_effect_list(o, list, 64);
     for (int i = 0; i < n; ++i) {
-        LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-        if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
-        LPCSTR v = e->get_effect_item_value(list[i], L"画像ファイル");
-        if (!v || !*v) return false;
+        const std::wstring nm = CopyEffectName(e, list[i]);
+        if (nm != L"ProxyLayer") continue;
+        const std::string v = CopyItem(e, list[i], L"画像ファイル");
+        if (v.empty()) return false;
         const std::wstring base = FileBaseNameWide(v);
         if (base.empty()) return false;
         e->set_object_name(o, base.c_str());
@@ -608,20 +641,22 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
     const int n = e->get_effect_list ? e->get_effect_list(o, list, 64) : 0;
     if (n <= 0) return 0;
     for (int i = 0; i < n; ++i) {
-        LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-        const bool isProxy = nm && std::wcscmp(nm, L"ProxyLayer") == 0;
+        const std::wstring nm = CopyEffectName(e, list[i]);
+        const bool isProxy = (nm == L"ProxyLayer");
         if (enable) {
             if (isProxy) continue;                       // already converted
             std::string path;
             LPCWSTR usedItem = L"ファイル";
             const bool hasPath = ReadSourcePath(e, list[i], &path, &usedItem);
-            if (!IsImageEffect(nm)) {
-                if (hasPath) LogSkipOnce(nm, "effect name not whitelisted");
+            if (!IsImageEffect(nm.empty() ? nullptr : nm.c_str())) {
+                if (hasPath) LogSkipOnce(nm.empty() ? nullptr : nm.c_str(),
+                                         "effect name not whitelisted");
                 continue;                                // audio / video / OBJ / VRM / 3D
             }
             if (!hasPath) continue;
             if (!IsImagePath(path)) {
-                LogSkipOnce(nm, "file extension not an image");
+                LogSkipOnce(nm.empty() ? nullptr : nm.c_str(),
+                            "file extension not an image");
                 continue;                                // .wav / .obj / .mp4 ...
             }
             // Downstream effects are NOT screened out: colour grading, keying
@@ -634,7 +669,8 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
             e->set_effect_item_value(ne, L"画像ファイル", path.c_str());
             // Remember EXACTLY what was replaced, so OFF restores the original
             // effect instead of blindly turning audio/3D into 画像ファイル.
-            e->set_effect_item_value(ne, L"元のエフェクト名", WideToUtf8(nm).c_str());
+            e->set_effect_item_value(ne, L"元のエフェクト名",
+                                     WideToUtf8(nm.c_str()).c_str());
             e->set_effect_item_value(ne, L"元のファイル項目名", WideToUtf8(usedItem).c_str());
             // Expose the ORIGINAL image size to downstream filters/scripts.
             int iw = 0, ih = 0;
@@ -652,29 +688,32 @@ static int ConvertObject(EDIT_SECTION* e, OBJECT_HANDLE o, bool enable) {
             return 1;
         } else {
             if (!isProxy) continue;
-            LPCSTR v = e->get_effect_item_value(list[i], L"画像ファイル");
-            if (!v || !*v) continue;
-            // Copy it BEFORE delete_effect() invalidates the item buffer.
-            const std::wstring base = FileBaseNameWide(v);
-            LPCSTR oe = e->get_effect_item_value(list[i], L"元のエフェクト名");
-            LPCSTR oi = e->get_effect_item_value(list[i], L"元のファイル項目名");
+            // v0.3.6: EVERY string is copied immediately. The old code kept a
+            // raw LPCSTR `v` alive across two more get_effect_item_value()
+            // calls and create_effect(); by the time it was passed to
+            // set_effect_item_value() the SDK scratch buffer had been reused,
+            // so the saved project got heap garbage instead of the image path.
+            const std::string path = CopyItem(e, list[i], L"画像ファイル");
+            if (path.empty()) continue;
+            const std::wstring base = FileBaseNameWide(path);
+            const std::string oe = CopyItem(e, list[i], L"元のエフェクト名");
+            const std::string oi = CopyItem(e, list[i], L"元のファイル項目名");
             // Legacy objects converted before this metadata existed fall back
             // to 画像ファイル; a warning makes that visible in the log.
-            if (!oe || !*oe) Log(L"AutoProxy: legacy proxy without 元のエフェクト名, restoring 画像ファイル");
-            const std::wstring effect = (oe && *oe) ? Utf8ToWide(oe) : L"画像ファイル";
-            const std::wstring item   = (oi && *oi) ? Utf8ToWide(oi) : L"ファイル";
+            if (oe.empty()) Log(L"AutoProxy: legacy proxy without 元のエフェクト名, restoring 画像ファイル");
+            const std::wstring effect = oe.empty() ? L"画像ファイル" : Utf8ToWide(oe.c_str());
+            const std::wstring item   = oi.empty() ? L"ファイル"   : Utf8ToWide(oi.c_str());
             EFFECT_HANDLE ne = e->create_effect(o, effect.c_str());
             if (!ne) { LogF(L"AutoProxy: restore failed for effect %s", effect.c_str()); continue; }
-            if (!e->set_effect_item_value(ne, item.c_str(), v))
-                e->set_effect_item_value(ne, L"ファイル", v);   // language-pack fallback
+            if (!e->set_effect_item_value(ne, item.c_str(), path.c_str()))
+                e->set_effect_item_value(ne, L"ファイル", path.c_str());  // lang-pack fallback
             e->move_effect(o, ne, i);
             e->delete_effect(o, list[i]);
             // If the timeline still shows the file name WE wrote, restore the
             // standard name so 画像ファイル again shows its file name.
             if (e->get_object_name && e->set_object_name && !base.empty()) {
-                LPCWSTR cur = e->get_object_name(o);
-                if (cur && *cur && std::wcscmp(cur, base.c_str()) == 0)
-                    e->set_object_name(o, nullptr);
+                const std::wstring cur = CopyObjectName(e, o);
+                if (cur == base) e->set_object_name(o, nullptr);
             }
             return 1;
         }
@@ -765,12 +804,13 @@ static bool ObjectHasAbsoluteAnchor(EDIT_SECTION* e, OBJECT_HANDLE o,
                                     const EFFECT_HANDLE* list, int n,
                                     std::string* evidence) {
     for (int i = 0; i < n; ++i) {
-        LPCWSTR en = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
+        const std::wstring en = CopyEffectName(e, list[i]);
         for (LPCWSTR item : kAnchorItems) {
-            LPCSTR v = e->get_effect_item_value(list[i], item);
-            if (IsAbsoluteAnchorTuple(v)) {
-                if (evidence) *evidence = std::string(
-                    en ? WideToUtf8(en) : "?") + "/" + WideToUtf8(item);
+            const std::string v = CopyItem(e, list[i], item);
+            if (IsAbsoluteAnchorTuple(v.c_str())) {
+                if (evidence) *evidence =
+                    (en.empty() ? std::string("?") : WideToUtf8(en.c_str()))
+                    + "/" + WideToUtf8(item);
                 return true;
             }
         }
@@ -778,9 +818,13 @@ static bool ObjectHasAbsoluteAnchor(EDIT_SECTION* e, OBJECT_HANDLE o,
     // Fallback for third-party scripts that used a different item name:
     // the object alias is INI-like text containing every item value.
     std::string key;
-    if ((e->get_object_alias) && AliasHasAnchor(e->get_object_alias(o), &key)) {
-        if (evidence) *evidence = "alias:" + key;
-        return true;
+    if (e->get_object_alias) {
+        LPCSTR a = e->get_object_alias(o);
+        const std::string alias = (a && *a) ? std::string(a) : std::string();
+        if (AliasHasAnchor(alias.c_str(), &key)) {
+            if (evidence) *evidence = "alias:" + key;
+            return true;
+        }
     }
     return false;
 }
@@ -838,11 +882,12 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
                 RegisterNativeImageSize(e, list[i]);
             bool isImageObject = false, hasCustomEffect = false;
             for (int i = 0; i < n; ++i) {
-                LPCWSTR cn = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-                if (!cn) continue;
-                if (std::wcscmp(cn, L"画像ファイル") == 0 ||
-                    std::wcscmp(cn, L"ProxyLayer") == 0) { isImageObject = true; continue; }
-                if (std::wcscmp(cn, L"標準描画") != 0) hasCustomEffect = true;
+                const std::wstring cn = CopyEffectName(e, list[i]);
+                if (cn.empty()) continue;
+                if (cn == L"画像ファイル" || cn == L"ProxyLayer") {
+                    isImageObject = true; continue;
+                }
+                if (cn != L"標準描画") hasCustomEffect = true;
             }
             // Alias serialisation is relatively expensive (this pass runs on
             // the UI thread), so only inspect objects with a real script.
@@ -861,14 +906,14 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
                          evidence.c_str());
             }
             for (int i = 0; i < n; ++i) {
-                LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-                if (nm && std::wcscmp(nm, L"ProxyLayer") == 0) continue;
+                const std::wstring nm = CopyEffectName(e, list[i]);
+                if (nm == L"ProxyLayer") continue;
                 for (LPCWSTR item : kLayerRefItems) {
-                    LPCSTR v = e->get_effect_item_value(list[i], item);
-                    if (!v || !*v) continue;
+                    const std::string val = CopyItem(e, list[i], item);
+                    if (val.empty()) continue;
                     // Parse "2", "4 5", "4-5", "4,5" etc. Non-numeric values
                     // such as "前方の全レイヤー自動検出" are ignored here.
-                    const char* q = v;
+                    const char* q = val.c_str();
                     int found = 0;
                     while (*q) {
                         if (*q >= '0' && *q <= '9') {
@@ -887,12 +932,13 @@ static ProtectedLayers CollectProtectedLayers(EDIT_SECTION* e,
                         }
                     }
                     if (!found) continue;
-                    const std::wstring key = std::wstring(nm ? nm : L"?") + L"|" + item + L"|" + Utf8ToWide(v);
+                    const std::wstring nmShow = nm.empty() ? std::wstring(L"?") : nm;
+                    const std::wstring key = nmShow + L"|" + item + L"|" + Utf8ToWide(val.c_str());
                     bool first = false;
                     { std::lock_guard<std::mutex> lk(logMu); first = logged.insert(key).second; }
                     if (first)
                         LogF(L"AutoProxy: cross-layer reference %s/%s=%hs -> protecting layer(s)",
-                             nm ? nm : L"?", item, v);
+                             nmShow.c_str(), item, val.c_str());
                 }
             }
       });
@@ -908,11 +954,12 @@ static int SetKeepOriginal(EDIT_SECTION* e, OBJECT_HANDLE o, bool keep) {
     EFFECT_HANDLE list[64] = {};
     const int n = e->get_effect_list(o, list, 64);
     for (int i = 0; i < n; ++i) {
-        LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-        if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
-        LPCSTR cur = e->get_effect_item_value(list[i], L"このレイヤーは元画像を維持");
-        const bool on = cur && (std::strcmp(cur, "1") == 0 ||
-                                std::strcmp(cur, "on") == 0);
+        const std::wstring nm = CopyEffectName(e, list[i]);
+        if (nm != L"ProxyLayer") continue;
+        const std::string cur = CopyItem(e, list[i], L"このレイヤーは元画像を維持");
+        const bool on = (!cur.empty() &&
+                         (std::strcmp(cur.c_str(), "1") == 0 ||
+                          std::strcmp(cur.c_str(), "on") == 0));
         if (on == keep) return 0;
         if (!e->set_effect_item_value(list[i], L"このレイヤーは元画像を維持",
                                       keep ? "1" : "0")) return 0;
@@ -979,12 +1026,12 @@ static int SetKeepAll(EDIT_SECTION* e, bool on) {
     const int maxFrame = std::min(std::max(info.frame_max, 0), 19999);
     int changed = 0;
     for (int layer = 0; layer <= maxLayer; ++layer) {
-      ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
+        ForEachObjectOnLayer(e, layer, maxFrame, [&](OBJECT_HANDLE o) {
             EFFECT_HANDLE list[64] = {};
             const int n = e->get_effect_list ? e->get_effect_list(o, list, 64) : 0;
             for (int i = 0; i < n; ++i) {
-                LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-                if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
+                const std::wstring nm = CopyEffectName(e, list[i]);
+                if (nm != L"ProxyLayer") continue;
                 e->set_effect_item_value(list[i], L"このレイヤーは元画像を維持", on ? "1" : "0");
                 ++changed;
             }
@@ -1379,6 +1426,13 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         const std::wstring sw = T(L"switch", L"自動プロキシ（全シーン、設定を保存）");
         const std::wstring ok = T(L"ok", L"OK");
         const std::wstring cancel = T(L"cancel", L"キャンセル");
+        // v0.3.6: record the RESOLVED strings. If a language pack is missing a
+        // [Panel] key the host returns the key itself, so this line makes the
+        // "title"/"ok" placeholder regression visible without a screenshot.
+        LogF(L"Panel[lang]: title='%s' switch='%s' ok='%s' cancel='%s' status='%s'",
+             T(L"title", L"ProxyLayer 自動プロキシ").c_str(), sw.c_str(),
+             ok.c_str(), cancel.c_str(),
+             T(L"status", L"現在: %s   草稿: %s%s").c_str());
         g_panel_check = CreateWindowExW(0, L"BUTTON", sw.c_str(),
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 12, 12, 336, 24,
             h, (HMENU)IDC_SWITCH, hi, nullptr);
@@ -1622,13 +1676,15 @@ static void SafetyCheckThunk(void* p, EDIT_SECTION* e) {
         EFFECT_HANDLE list[32] = {};
         const int n = e->get_effect_list ? e->get_effect_list(o, list, 32) : 0;
         for (int i = 0; i < n; ++i) {
-            LPCWSTR nm = e->get_effect_name ? e->get_effect_name(list[i]) : nullptr;
-            if (!nm || std::wcscmp(nm, L"ProxyLayer") != 0) continue;
+            const std::wstring nm = CopyEffectName(e, list[i]);
+            if (nm != L"ProxyLayer") continue;
             ++a->proxies;
-            LPCSTR w = e->get_effect_item_value(list[i], L"元の幅");
-            LPCSTR h = e->get_effect_item_value(list[i], L"元の高さ");
-            if (w && *w) a->srcW = std::atoi(w);
-            if (h && *h) a->srcH = std::atoi(h);
+            // Both values must be copied: the second get_effect_item_value()
+            // invalidates the pointer returned by the first (plugin2.h:542).
+            const std::string w = CopyItem(e, list[i], L"元の幅");
+            const std::string h = CopyItem(e, list[i], L"元の高さ");
+            if (!w.empty()) a->srcW = std::atoi(w.c_str());
+            if (!h.empty()) a->srcH = std::atoi(h.c_str());
         }
     }
 }
