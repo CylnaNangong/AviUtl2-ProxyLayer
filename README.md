@@ -117,7 +117,9 @@
 4. `select_scene()` 明确禁止在参照锁/编辑锁内调用，因此整个遍历放在 UI 线程的隐藏窗口 `WM_TIMER` 里执行，菜单回调只投递消息。
 5. 导出态 / 保存态强制 L0，用完整原图重绘。
 
-更多实测数据与踩坑记录见 [`docs/TECHNICAL.md`](docs/TECHNICAL.md)；维护角度的评估与改进建议见 [`docs/REVIEW.md`](docs/REVIEW.md)。
+更多实测数据与踩坑记录见 [`docs/TECHNICAL.md`](docs/TECHNICAL.md)；维护角度的评估与改进建议见 [`docs/REVIEW.md`](docs/REVIEW.md)；
+**下一阶段功能（次合成预渲染）的设计与验证计划**见 [`docs/PRERENDER.md`](docs/PRERENDER.md)（尚未实现）。
+另可参阅工作区报告 `AviUtl2_大图层瓶颈与次合成预渲染迁移评估.html`（HitFilm Proxy / Pre-Render 契约考证）。
 
 ## 已知限制
 
@@ -243,6 +245,7 @@ build_*.sh              构建脚本
 tools/gen_luaproxy_def.py  从 luaJIT.dll 导出表生成 322 条 PE forwarder
 tools/dump_stack.py     纯标准库 minidump 分析器（异常/栈/模块直方图）
 tools/read_perf.py      汇总 ProxyLayer-perf.log 遥测
+docs/PRERENDER.md       次合成预渲染技术设计（规划中，未实现）
 dist/ProxyLayer.aux2    预编译二进制
 docs/TECHNICAL.md       实现细节与实测数据
 docs/LOCALIZATION.md    语言包词条清单与新增语言流程
