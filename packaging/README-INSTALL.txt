@@ -54,6 +54,12 @@
   - AviUtl2 の実行中でもファイルは置換できますが、新しい DLL の読み込みには再起動が必要です。
   - 上書きされたファイルはすべて .bak-<タイムスタンプ> として残ります。
   - プレビュー画質が下がるのは仕様です。出力は常に元画像を使います。
+  - 【重要】OpenGlow / 光束_H など「自身の object バッファを読む」スクリプトは、
+    同じパラメータでもプレビューのグロー範囲・光束の長さが原図と僅かに異なります。
+    obj.w/obj.h は元サイズへ補正されますが、実際のバッファは 1/div のためです。
+    出力時は強制 L0 で原寸バッファに戻るため無劣化です。プレビューも完全一致させたい
+    場合は、そのレイヤーの「このレイヤーは元画像を維持」を ON にしてください
+    （そのレイヤーだけ高速化されません）。詳細は README.md の「既知の制限」。
   - 初回再生はプロキシキャッシュ構築のため数秒遅くなります。
   - メニュー項目と設定ウィンドウの文言はプラグイン内部の文字列（中国語）で、
     言語パック（.aul2）が対象とするのは効果名とパラメータ名のみです。
@@ -114,6 +120,11 @@
   - 安装时如果 AviUtl2 正在运行，文件仍可替换，但必须重启宿主才会加载新 DLL。
   - 所有被覆盖的文件都会留下 .bak-<时间戳> 备份。
   - 预览画质下降是设计使然，导出始终使用原图。
+  - 【重要】OpenGlow / 光束_H 这类「读取自身 object 缓冲」的脚本，参数相同时预览里的
+    光晕范围 / 光束长度仍可能与原图略有差异：obj.w/obj.h 已被补偿回原尺寸，
+    但真实像素缓冲只有 1/div。导出时强制 L0、缓冲恢复原寸，因此输出无损。
+    想让预览也完全一致，请给该图层勾「本图层保持原图」（仅该层不加速）。
+    详见 README.md「已知限制」。
   - 首次播放需要构建代理缓存，开头几秒偏慢。
   - 菜单项与设置窗口文本是插件内部字符串（中文）；.aul2 语言包只覆盖效果名与参数名。
 
@@ -173,6 +184,13 @@
     load the new DLL.
   - Every overwritten file keeps a .bak-<timestamp> copy.
   - Softer preview quality is by design; exports always use the original image.
+  - IMPORTANT: scripts that read their OWN object buffer (OpenGlow, 光束_H, ...)
+    can show a slightly different glow spread / beam length in preview with identical
+    parameters. obj.w/obj.h are compensated to the original size, but the real pixel
+    buffer is still 1/div. Exports force L0 (full-size buffer) and are lossless.
+    For a pixel-identical preview, tick このレイヤーは元画像を維持
+    (Keep this layer full-res / 本图层保持原图) on that layer; only that layer
+    loses the speedup. See README.md > Known limitations.
   - The first playback builds the proxy cache and is slower for a few seconds.
   - The menu entries and settings-window text are compiled strings (Chinese); the .aul2
     language packs only cover the effect name and parameter names.

@@ -123,12 +123,54 @@ Measured data and war stories: [`TECHNICAL.md`](TECHNICAL.md); maintainer-orient
 
 ## Known limitations
 
+> **⚠️ If you use glow/beam scripts, read [Scripts that read their own pixel buffer](#preview-scripts-that-read-their-own-pixel-buffer-openglow-光束_h-etc) first.** A proxied layer reports the original `obj.w/obj.h`, but its **real pixel buffer is still 1/div**. Scripts that read that buffer can look slightly different in preview; exports are always lossless.
+
 - The AviUtl2 SDK cannot keep `obj.w/obj.h` unchanged while a proxy texture is used (measured 2048 → 1024 on the Lua side). **The optional `luaJIT.dll` forwarding proxy maps it back to the original size** (A/B measured 1024 → 2048); scripts like OpenGlow / 光束_H that compute their range from `obj.w/h` depend on it, so it cannot be dropped. Scripts may also read `元の幅/元の高さ`. The proxy cannot help with **buffer-size** reads such as `getpixeldata()`; that is what cross-layer sampling protection is for.
 - Layers sampled by other layers stay at full resolution and therefore gain no speedup.
 - Still images only; previews look softer than the original, exports are unaffected.
 - The first playback builds caches.
 - Menus and the settings window read the `[Panel]` section via `CONFIG_HANDLE::get_language_text()`, so they follow the host language (Japanese fallback).
 - Some third-party Rust/Egui plugins panic when the host exits; unrelated to this plugin.
+
+### Preview: scripts that read their own pixel buffer (OpenGlow / 光束_H etc.)
+
+**This is an inherent limit of proxying, not a bug and not a failed compensation.**
+The `luaJIT.dll` forwarding proxy can only fix the two **numbers** `obj.w` and `obj.h`;
+under a proxy the host still hands the script an object buffer containing **1/div of the pixels**.
+When a script samples that small buffer using the compensated (large) dimensions, the result
+differs slightly from the full-resolution render.
+
+| | Full resolution (original) | Proxied (preview) |
+| --- | --- | --- |
+| `obj.w` / `obj.h` | original, e.g. 6251×4501 | still 6251×4501 (pair matching fixed this) |
+| object pixel buffer | 6251×4501 | 1563×1126 (1/div) |
+| buffer reads | complete shape | out-of-bounds zeros / different pyramid levels and padding base |
+
+**Affected scripts**: anything that reads the **current object's own** buffer — typically
+`obj.pixelshader(..., "object", ...)`, `getpixeldata()` / `putpixeldata()`, or re-reading
+`obj.w/obj.h` after `obj.effect("領域拡張")`. Measured examples:
+
+- `OpenGlow`: identical parameters, slightly different glow spread in preview.
+- `光束_H`: identical parameters, different beam length in preview.
+  (**Note**: "only a small bright patch in the centre" was the old *uncompensated* `obj.w/h`
+  problem, fixed in v0.3.5. What remains is a much smaller difference.)
+
+**Not affected**: scripts that only use the `obj.w/h` numbers without reading the buffer;
+plain colour grading, keying and transform effects.
+
+**Exports are lossless**: the export/save gate forces L0, restoring the full-size buffer,
+so rendered output matches the unproxied project. The difference exists only while editing.
+
+**For a pixel-identical preview**: tick **`このレイヤーは元画像を維持`**
+(`Keep this layer full-res` in the English pack, 「本图层保持原图」 in Chinese) on that layer.
+That layer stays full-resolution while every other layer keeps its speedup.
+
+**Why this is not automatic**: existing protection covers two cases that can be identified
+precisely by parameter semantics — cross-layer sampling (`obj.load("layer", ...)` etc.) and
+same-object absolute pixel anchors (`bone`-style coordinate tuples). Scripts reading their own
+buffer vary widely; a blanket rule would also skip colour grading / keying and similar everyday
+effects, which conflicts with the "protect only what is necessary" principle. See
+[`TECHNICAL.md` §5.3](TECHNICAL.md) for the full analysis.
 
 ## Building
 
