@@ -55,6 +55,17 @@ static CONFIG_HANDLE*    g_config = nullptr;   // InitializeConfig(), before Ini
 static std::atomic<int>  g_event_state{ -1 };
 static std::mutex        g_mu;
 
+// A' video-proxy export gate (P2). Declared here because OnStateChanged()
+// and RunPeriodicPass() are defined before the implementation block below.
+static std::atomic<bool>  g_vp_armed{ false };
+static std::atomic<bool>  g_vp_saving{ false };
+static std::atomic<bool>  g_vp_restore_pending{ false };
+static std::atomic<DWORD> g_vp_f9_tick{ 0 };
+static void VideoProxyOnState(int state);
+static void VideoProxyExportTick();
+static void VideoProxyInstallHooks();
+static void VideoProxyRemoveHooks();
+
 // Menus and the self-drawn settings window are runtime C++ strings, so .aul2
 // display packs cannot reach them. The official CONFIG_HANDLE solves this:
 // get_language_text() looks up [Panel] in the current language file.
@@ -413,8 +424,11 @@ static void OnClearCache(EDIT_SECTION*) {
 }
 static void OnStateChanged(void*) {
     // Event callbacks only set a flag. Never call call_edit_section() here:
-    // the SDK explicitly forbids it during output.
-    if (g_edit && g_edit->get_edit_state) g_event_state.store(g_edit->get_edit_state());
+    // plugin2.h:1201 forbids it from an event callback.
+    const int st = (g_edit && g_edit->get_edit_state)
+        ? g_edit->get_edit_state() : -1;
+    g_event_state.store(st);
+    VideoProxyOnState(st);
 }
 static void OnObjectsUpdated(void*) {
     // Event callbacks must NOT touch EDIT_SECTION. Just wake the watcher.
@@ -1211,6 +1225,357 @@ static int RunProtectOnly() {
     return req.result;
 }
 
+//------------------------------------------------------------------------------
+// A' video-proxy export gate (P2, 2026-11-20)
+//
+// Picture proxies live entirely inside the filter: the project file is never
+// modified, so the export gate is a per-frame read of get_edit_state() that
+// falls back to L0. Video proxies are different: P1 rewrites ファイル and
+// 拡大率 in the project, so an export MUST put those values back, while
+// call_edit_section() fails once output is running (plugin2.h:734).
+//
+// Real-host probe (host-test/p2-probe/P2_PROBE_REPORT.md) proved that when
+// WM_KEYDOWN VK_F9 reaches the UI thread the host is still EDIT_STATE_EDIT and
+// call_edit_section() succeeds. We hook exactly that moment, restore the
+// original media + original scale for every 動画ファイル object carrying P1
+// metadata, then re-apply the proxy after output ends.
+//
+// Objects WITHOUT the metadata are untouched, so F9 stays a complete no-op on
+// ordinary image projects. Scene switching follows ConvertAllScenes(): UI
+// thread, outside any edit callback.
+//------------------------------------------------------------------------------
+struct VideoProxyRec {
+    std::string origFile, origScale, proxyFile, proxyScale;
+    int scene = 0, layer = 0, frame = 0;
+};
+static std::mutex g_vp_mu;
+static std::unordered_map<int, std::vector<VideoProxyRec>> g_vp_by_scene;
+static HHOOK g_vp_getmsg_hook = nullptr;
+
+struct VPSceneReq {
+    std::vector<VideoProxyRec> recs;
+    int found = 0;
+    int changed = 0;
+    bool restore = true;
+};
+
+// Runs inside call_edit_section_param(): collect the objects P1 converted.
+// P1 writes 元の動画ファイル / ProxyLayer動画プロキシ into the 動画ファイル
+// effect block and 元の拡大率 into the 標準描画 block. If the host drops
+// unknown items this scan simply finds nothing - logged explicitly, never
+// guessed.
+// v2 (2026-11-20): the real host DROPS unknown .aup2 items on load. The
+// diagnostic run proved it: objects=1 video=1 file=1 scale=1 but
+// metaFile=0 metaScale=0, i.e. 元の動画ファイル / 元の拡大率 never reach
+// get_effect_item_value(). So read them straight from the project file text
+// instead. PROJECT_FILE::get_project_file_path() (plugin2.h:1001) gives us the
+// path inside the edit callback; the strings are UTF-8, exactly what
+// set_object_item_value() expects. Standard items (ファイル / 拡大率) are
+// still available through the SDK if needed, but the text is authoritative.
+struct VPProjectMeta {
+    int scene = 0, objId = -1, layer = -1, frame = 0;
+    std::string curFile, origFile, curScale, origScale;
+};
+
+static LPCWSTR __declspec(noinline) VPGetProjectPathRaw(EDIT_SECTION* e) {
+    __try {
+        if (!e || !e->get_project_file || !g_edit) return nullptr;
+        PROJECT_FILE* pf = e->get_project_file(g_edit);
+        if (!pf || !pf->get_project_file_path) return nullptr;
+        return pf->get_project_file_path();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+static bool VPReadProjectMeta(const std::wstring& path,
+                              std::vector<VideoProxyRec>* out) {
+    if (path.empty() || !out) return false;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const DWORD size = GetFileSize(h, nullptr);
+    std::string text;
+    if (size > 0 && size < 64u * 1024u * 1024u) {
+        text.resize(size);
+        DWORD got = 0;
+        ReadFile(h, &text[0], size, &got, nullptr);
+        text.resize(got);
+    }
+    CloseHandle(h);
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);
+    auto ToInt = [](const std::string& s) {
+        int v = 0;
+        for (char c : s) {
+            if (c < '0' || c > '9') break;
+            v = v * 10 + (c - '0');
+        }
+        return v;
+    };
+    std::unordered_map<int, VPProjectMeta> objs;
+    int scene = 0, objId = -1;
+    bool inEffect = false;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const size_t end = text.find('\n', pos);
+        std::string line = (end == std::string::npos)
+            ? text.substr(pos) : text.substr(pos, end - pos);
+        pos = (end == std::string::npos) ? text.size() : end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        if (line[0] == '[') {
+            const size_t close = line.find(']');
+            if (close == std::string::npos) continue;
+            const std::string head = line.substr(1, close - 1);
+            if (head.rfind("scene.", 0) == 0) {
+                scene = ToInt(head.substr(6));
+                objId = -1; inEffect = false;
+            } else {
+                const int n = ToInt(head);
+                if (head.find('.') == std::string::npos) {
+                    objId = n; inEffect = false;
+                    VPProjectMeta& m = objs[scene * 100000 + n];
+                    m.scene = scene; m.objId = n;
+                } else {
+                    inEffect = true;
+                }
+            }
+            continue;
+        }
+        if (objId < 0) continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const std::string v = line.substr(eq + 1);
+        VPProjectMeta& m = objs[scene * 100000 + objId];
+        if (!inEffect) {
+            if (k == "layer") m.layer = ToInt(v);
+            else if (k == "frame") {
+                const size_t comma = v.find(',');
+                m.frame = ToInt(comma == std::string::npos ? v : v.substr(0, comma));
+            }
+        } else {
+            if (k == "ファイル") m.curFile = v;
+            else if (k == "元の動画ファイル") m.origFile = v;
+            else if (k == "拡大率") m.curScale = v;
+            else if (k == "元の拡大率") m.origScale = v;
+        }
+    }
+    for (const auto& kv : objs) {
+        const VPProjectMeta& m = kv.second;
+        if (m.layer < 0 || m.origFile.empty() || m.curFile.empty()) continue;
+        VideoProxyRec rec;
+        rec.scene      = m.scene;
+        rec.layer      = m.layer;
+        rec.frame      = m.frame;
+        rec.origFile   = m.origFile;
+        rec.proxyFile  = m.curFile;
+        rec.origScale  = m.origScale;
+        rec.proxyScale = m.curScale;
+        out->push_back(rec);
+    }
+    return true;
+}
+
+static void VPScanThunk(void* p, EDIT_SECTION* e) {
+    VPSceneReq* r = static_cast<VPSceneReq*>(p);
+    if (!e || !r) return;
+    EDIT_INFO info{};
+    if (g_edit && g_edit->get_edit_info) g_edit->get_edit_info(&info, sizeof(info));
+    LPCWSTR raw = VPGetProjectPathRaw(e);
+    const std::wstring path = raw ? std::wstring(raw) : std::wstring();
+    LogF(L"VideoProxy[scan]: scene=%d project=%s",
+         info.scene_id, path.empty() ? L"(unset)" : path.c_str());
+    std::vector<VideoProxyRec> all;
+    const bool ok = VPReadProjectMeta(path, &all);
+    LogF(L"VideoProxy[scan]: projectMeta ok=%d total=%u",
+         (int)ok, (unsigned)all.size());
+    for (const VideoProxyRec& rec : all)
+        if (rec.scene == info.scene_id) r->recs.push_back(rec);
+    r->found = (int)r->recs.size();
+    LogF(L"VideoProxy[scan]: done scene=%d found=%d", info.scene_id, r->found);
+}
+
+static void VPApplyThunk(void* p, EDIT_SECTION* e) {
+    VPSceneReq* r = static_cast<VPSceneReq*>(p);
+    if (!e || !e->set_object_item_value || !e->find_object) return;
+    int verified = 0, mismatch = 0;
+    for (const VideoProxyRec& rec : r->recs) {
+        OBJECT_HANDLE o = e->find_object(rec.layer, rec.frame);
+        if (!o) continue;
+        const std::string& file  = r->restore ? rec.origFile  : rec.proxyFile;
+        const std::string& scale = r->restore ? rec.origScale : rec.proxyScale;
+        if (file.empty()) continue;
+        bool ok = e->set_object_item_value(
+            o, L"動画ファイル", L"ファイル", file.c_str());
+        if (!scale.empty())
+            ok = e->set_object_item_value(
+                o, L"標準描画", L"拡大率", scale.c_str()) && ok;
+        // set_object_item_value() returning true is not proof. Read the two
+        // standard items back through the SDK and compare. (The host may
+        // normalise path separators, so also log both lengths.)
+        if (ok && e->get_effect_list && e->get_effect_item_value) {
+            EFFECT_HANDLE list[64] = {};
+            const int n = e->get_effect_list(o, list, 64);
+            std::string readFile, readScale;
+            for (int i = 0; i < n; ++i) {
+                const std::wstring name = CopyEffectName(e, list[i]);
+                if (name == L"動画ファイル")
+                    readFile = CopyItem(e, list[i], L"ファイル");
+                else if (name == L"標準描画")
+                    readScale = CopyItem(e, list[i], L"拡大率");
+            }
+            const bool fileOk = (readFile == file);
+            const bool scaleOk = scale.empty() || (readScale == scale);
+            if (verified + mismatch < 2)
+                LogF(L"VideoProxy[apply]: readback file=%d scale=%d "
+                     L"wroteLen=%u readLen=%u scaleWroteLen=%u scaleReadLen=%u",
+                     (int)fileOk, (int)scaleOk,
+                     (unsigned)file.size(), (unsigned)readFile.size(),
+                     (unsigned)scale.size(), (unsigned)readScale.size());
+            if (fileOk && scaleOk) ++verified; else ++mismatch;
+        }
+        if (ok) ++r->changed;
+    }
+    LogF(L"VideoProxy[apply]: %s verified=%d mismatch=%d changed=%d",
+         r->restore ? L"restore" : L"re-apply",
+         verified, mismatch, r->changed);
+    if (r->changed && e->set_edited_state) e->set_edited_state();
+}
+
+// Scene switching must happen on the UI thread and OUTSIDE any edit callback
+// (plugin2.h:905); mirrors the proven ConvertAllScenes() pattern.
+static int VPForAllScenes(bool restore) {
+    if (!OnHostUiThread()) return -3;
+    if (g_in_all_scenes.load()) return -5;
+    if (!g_edit || !g_edit->call_edit_section_param) return -2;
+    if (g_edit->get_edit_state &&
+        g_edit->get_edit_state() != EDIT_HANDLE::EDIT_STATE_EDIT) return -4;
+    AllScenesGuard guard;
+    EDIT_INFO info{};
+    if (g_edit->get_edit_info) g_edit->get_edit_info(&info, sizeof(info));
+    const int original = info.scene_id;
+    SceneIdList scenes;
+    if (g_edit->enum_scene_name) g_edit->enum_scene_name(&scenes, &EnumSceneCb);
+    std::vector<int> ids;
+    ids.push_back(original);
+    if (g_edit->select_scene)
+        for (int id : scenes.ids) if (id != original) ids.push_back(id);
+
+    int total = 0, found = 0, failed = 0;
+    for (int id : ids) {
+        if (id != original && g_edit->select_scene && !g_edit->select_scene(id)) {
+            ++failed; continue;
+        }
+        VPSceneReq req;
+        req.restore = restore;
+        if (restore) {
+            if (!CallEditSection(&req, &VPScanThunk)) { ++failed; continue; }
+            found += req.found;
+            if (req.found == 0) continue;
+            std::lock_guard<std::mutex> lk(g_vp_mu);
+            g_vp_by_scene[id] = req.recs;
+        } else {
+            {
+                std::lock_guard<std::mutex> lk(g_vp_mu);
+                auto it = g_vp_by_scene.find(id);
+                if (it != g_vp_by_scene.end()) req.recs = it->second;
+            }
+            if (req.recs.empty()) continue;
+        }
+        if (!CallEditSection(&req, &VPApplyThunk)) { ++failed; continue; }
+        total += req.changed;
+    }
+    if (g_edit->select_scene && original >= 0 && ids.size() > 1)
+        g_edit->select_scene(original);
+    if (!restore) {
+        std::lock_guard<std::mutex> lk(g_vp_mu);
+        g_vp_by_scene.clear();
+    }
+    LogF(L"VideoProxy[export]: %s -> found=%d changed=%d sceneFail=%d sceneCount=%u",
+         restore ? L"restore" : L"re-apply", found, total, failed,
+         (unsigned)ids.size());
+    return total;
+}
+
+static void VideoProxyOnF9() {
+    if (!OnHostUiThread()) return;
+    if (g_edit && g_edit->get_edit_state &&
+        g_edit->get_edit_state() != EDIT_HANDLE::EDIT_STATE_EDIT) return;
+    if (g_vp_armed.load()) return;
+    const DWORD t0 = GetTickCount();
+    const int n = VPForAllScenes(true);
+    LogF(L"VideoProxy[export]: F9 gate restored %d object(s) in %u ms",
+         n, (unsigned)(GetTickCount() - t0));
+    if (n > 0) {
+        g_vp_saving.store(false);
+        g_vp_restore_pending.store(false);
+        g_vp_f9_tick.store(GetTickCount());
+        g_vp_armed.store(true);
+    }
+}
+
+static LRESULT CALLBACK VPGetMsgHook(int code, WPARAM wp, LPARAM lp) {
+    if (code >= 0 && lp) {
+        const MSG* m = reinterpret_cast<const MSG*>(lp);
+        if (m->message == WM_KEYDOWN && m->wParam == VK_F9) {
+            Log(L"VideoProxy[export]: F9 intercepted");
+            VideoProxyOnF9();
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+static void VideoProxyInstallHooks() {
+    if (g_vp_getmsg_hook) return;
+    g_vp_getmsg_hook = SetWindowsHookExW(WH_GETMESSAGE, &VPGetMsgHook,
+                                         nullptr, GetCurrentThreadId());
+    LogF(L"VideoProxy[export]: F9 hook=%p tid=%lu",
+         (void*)g_vp_getmsg_hook, (unsigned long)GetCurrentThreadId());
+}
+static void VideoProxyRemoveHooks() {
+    if (g_vp_getmsg_hook) {
+        UnhookWindowsHookEx(g_vp_getmsg_hook);
+        g_vp_getmsg_hook = nullptr;
+    }
+}
+static void VideoProxyOnState(int state) {
+    if (state == EDIT_HANDLE::EDIT_STATE_SAVE) {
+        g_vp_saving.store(true);
+        Log(L"VideoProxy[export]: EDIT_STATE_SAVE observed");
+    } else if (state == EDIT_HANDLE::EDIT_STATE_EDIT &&
+               g_vp_saving.exchange(false)) {
+        g_vp_restore_pending.store(true);
+        Log(L"VideoProxy[export]: output ended -> proxy re-apply queued");
+    }
+}
+static void VideoProxyExportTick() {
+    const bool edit = (!g_edit || !g_edit->get_edit_state ||
+                       g_edit->get_edit_state() == EDIT_HANDLE::EDIT_STATE_EDIT);
+    if (g_vp_restore_pending.load() && g_vp_armed.load()) {
+        if (!edit) return;                      // keep the pending flag
+        g_vp_restore_pending.store(false);
+        const int n = VPForAllScenes(false);
+        LogF(L"VideoProxy[export]: re-applied proxy on %d object(s)", n);
+        g_vp_armed.store(false);
+        return;
+    }
+    // F9 pressed but the user cancelled the dialog: no SAVE ever started.
+    // Roll back after 2 minutes so preview speed is not left degraded.
+    if (g_vp_armed.load() && !g_vp_saving.load() && edit) {
+        const DWORD t = g_vp_f9_tick.load();
+        if (t && (GetTickCount() - t) > 120000) {
+            Log(L"VideoProxy[export]: no output within 120s -> rolling back");
+            const int n = VPForAllScenes(false);
+            LogF(L"VideoProxy[export]: rolled back %d object(s)", n);
+            g_vp_armed.store(false);
+        }
+    }
+}
+
 // Periodic passes run on the HOST UI THREAD via a hidden message-only window.
 // A std::thread used to do this and crashed aviutl2.exe deterministically
 // (see the EDIT_SECTION note near the globals). The window is created in
@@ -1223,6 +1588,7 @@ static void RunPeriodicPass() {
     if (!g_edit || !g_edit->get_edit_state) return;
     if (g_edit->get_edit_state() != EDIT_HANDLE::EDIT_STATE_EDIT) return;
     s_inPeriodicPass = true;
+    VideoProxyExportTick();
     const DWORD now = GetTickCount();
     if (g_auto_proxy.load()) {
         if (g_watch_dirty.load() || (now - s_lastScan) >= 5000) {
@@ -1736,6 +2102,7 @@ extern "C" __declspec(dllexport) bool InitializePlugin(DWORD version) {
     return true;
 }
 extern "C" __declspec(dllexport) void UninitializePlugin() {
+    VideoProxyRemoveHooks();
     PerfFlush("EXIT");        // never lose the last (short) telemetry window
     g_watch_stop.store(true);
     g_autotest_stop.store(true);
@@ -1772,6 +2139,7 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host) {
     g_ui_thread = (hostWnd && IsWindow(hostWnd))
         ? GetWindowThreadProcessId(hostWnd, nullptr) : GetCurrentThreadId();
     CreateTimerWindow();
+    VideoProxyInstallHooks();
     // Read the global switch HERE, not only in OnProjectLoad. A restored
     // session or a project opened from the command line does not necessarily
     // fire the project-load callback, which left the switch OFF forever.
