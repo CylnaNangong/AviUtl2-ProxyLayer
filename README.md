@@ -118,7 +118,10 @@
 5. 导出态 / 保存态强制 L0，用完整原图重绘。
 
 更多实测数据与踩坑记录见 [`docs/TECHNICAL.md`](docs/TECHNICAL.md)；维护角度的评估与改进建议见 [`docs/REVIEW.md`](docs/REVIEW.md)；
-**下一阶段功能（次合成预渲染）的设计与验证计划**见 [`docs/PRERENDER.md`](docs/PRERENDER.md)（尚未实现）。
+**下一阶段功能的设计与验证计划**（均未实现）：
+- 次合成预渲染：[`docs/PRERENDER.md`](docs/PRERENDER.md)
+- 视频素材代理：[`docs/VIDEO_PROXY.md`](docs/VIDEO_PROXY.md) —— 真机 A/B 已确认视频对象占整帧耗时 79–92%
+
 另可参阅工作区报告 `AviUtl2_大图层瓶颈与次合成预渲染迁移评估.html`（HitFilm Proxy / Pre-Render 契约考证）。
 
 ## 已知限制
@@ -246,6 +249,7 @@ tools/gen_luaproxy_def.py  从 luaJIT.dll 导出表生成 322 条 PE forwarder
 tools/dump_stack.py     纯标准库 minidump 分析器（异常/栈/模块直方图）
 tools/read_perf.py      汇总 ProxyLayer-perf.log 遥测
 docs/PRERENDER.md       次合成预渲染技术设计（规划中，未实现）
+docs/VIDEO_PROXY.md     视频素材代理评估与真机瓶颈归属（规划中，未实现）
 dist/ProxyLayer.aux2    预编译二进制
 docs/TECHNICAL.md       实现细节与实测数据
 docs/LOCALIZATION.md    语言包词条清单与新增语言流程
