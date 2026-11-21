@@ -1576,6 +1576,65 @@ static void VideoProxyExportTick() {
     }
 }
 
+// --- Test-only headless short export (marker gated) ---------------------------
+// Driver presses F9 (A' restore) then creates proxy-vpgo.on. This worker then
+// starts a real file output through EDIT_HANDLE::output_file(), which must be
+// called from a delayed worker outside any edit/reference lock
+// (ExportProbe.cpp:7-10). No save dialog => fully controlled output path, and
+// the 3-frame project keeps the uncompressed AVI around tens of MB.
+static std::thread g_vp_export_thread;
+static std::atomic<bool> g_vp_export_stop{ false };
+
+static bool __declspec(noinline) VPCallOutput(EDIT_HANDLE* e, LPCWSTR path) {
+    __try {
+        return e->output_file(path, L"AVIファイル出力", nullptr, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+static std::wstring VPReadExportMarker() {
+    const std::wstring mp = PluginDataFile(L"proxy-vpexport.on");
+    if (mp.empty()) return L"";
+    HANDLE h = CreateFileW(mp.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return L"";
+    char buf[1024] = {};
+    DWORD got = 0;
+    ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(h);
+    std::string line;
+    for (DWORD i = 0; i < got; ++i) {
+        if (buf[i] == '\r' || buf[i] == '\n') break;
+        line.push_back(buf[i]);
+    }
+    return line.empty() ? std::wstring() : Utf8ToWide(line.c_str());
+}
+static void VPExportWorker() {
+    bool go = false;
+    for (int i = 0; i < 1800 && !g_vp_export_stop.load(); ++i) {
+        const std::wstring gp = PluginDataFile(L"proxy-vpgo.on");
+        if (!gp.empty() &&
+            GetFileAttributesW(gp.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            go = true; break;
+        }
+        Sleep(100);
+    }
+    if (!go || g_vp_export_stop.load()) {
+        Log(L"VideoProxy[test]: go marker not seen, no output");
+        return;
+    }
+    for (int i = 0; i < 20 && !g_vp_export_stop.load(); ++i) Sleep(100);
+    if (g_vp_export_stop.load() || !g_edit || !g_edit->output_file) return;
+    const std::wstring path = VPReadExportMarker();
+    if (path.empty()) {
+        Log(L"VideoProxy[test]: marker has no output path");
+        return;
+    }
+    LogF(L"VideoProxy[test]: output_file(%s) starting", path.c_str());
+    const bool ok = VPCallOutput(g_edit, path.c_str());
+    LogF(L"VideoProxy[test]: output_file -> %d", (int)ok);
+}
+
 // Periodic passes run on the HOST UI THREAD via a hidden message-only window.
 // A std::thread used to do this and crashed aviutl2.exe deterministically
 // (see the EDIT_SECTION note near the globals). The window is created in
@@ -2102,6 +2161,8 @@ extern "C" __declspec(dllexport) bool InitializePlugin(DWORD version) {
     return true;
 }
 extern "C" __declspec(dllexport) void UninitializePlugin() {
+    g_vp_export_stop.store(true);
+    if (g_vp_export_thread.joinable()) g_vp_export_thread.join();
     VideoProxyRemoveHooks();
     PerfFlush("EXIT");        // never lose the last (short) telemetry window
     g_watch_stop.store(true);
@@ -2199,6 +2260,13 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host) {
     // the UI-thread WM_TIMER created above.
     LogF(L"RegisterPlugin: editHandle=%p cache=%p logger=%p",
          (void*)g_edit, (void*)g_cache, (void*)g_logger);
+    const std::wstring vpm = PluginDataFile(L"proxy-vpexport.on");
+    if (!vpm.empty() &&
+        GetFileAttributesW(vpm.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        g_vp_export_stop.store(false);
+        g_vp_export_thread = std::thread(&VPExportWorker);
+        Log(L"VideoProxy[test]: marker found - headless export worker armed");
+    }
 }
 
 //------------------------------------------------------------------------------

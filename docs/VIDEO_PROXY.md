@@ -1,6 +1,7 @@
 # 视频素材代理（Video Proxy）评估与真机瓶颈归属
 
-> 状态：**P0 / P1 已真机验证；P2（A′ 自动导出硬闸）实现中**。
+> 状态：**P0 / P1 已真机验证；P2（A′ 自动导出硬闸）核心闭环已真机验证，
+> 全量工程与菜单路径仍待实测**。对应发布版 v0.3.7。
 > P1 原型是离线脚本工具链（`ProxyLayer/host-test/video-ab/make_video_proxy.py`），
 > 尚未集成进插件，未改任何插件代码、DLL、语言包或 Release。
 > 触发问题：「现在只支持图片素材，能否扩大到视频？」
@@ -221,6 +222,20 @@ verify      指纹变化 → STALE，需重新转码
 | 2 | `objects=1 video=1 file=1 scale=1`、`metaFile=0 metaScale=0` | **宿主加载 `.aup2` 时丢弃未知键**，`元の動画ファイル` / `元の拡大率` 到不了 SDK |
 | 3 | 改为直接解析工程文本：`projectMeta ok=1 total=1`、`found=1 changed=1`（16 ms） | 识别通道打通 |
 | 4 | `readback file=1 scale=1`、`verified=1 mismatch=0 changed=1` | 写回**确实落地**，不只是 API 返回 true |
+| 5 | 3 帧短工程双变体真导出，两个 AVI **逐字节一致** | 导出无损 + 输出结束自动切回代理同时验证 |
+
+**第 5 轮决定性数据**（内置 `AVIファイル出力`，`output_file()` headless 触发，
+输出路径由标记文件精确指定、150 MB 硬保护，没有生成大 AVI）：
+
+```
+control    sha256=1512727C2FA0CD3532FE99BB16ABD6D86175B374055A40042BB97CAE57A31FF60  size=18675468
+experiment sha256=1512727C2FA0CD3532FE99BB16ABD6D86175B374055A40042BB97CAE57A31FF60  size=18675468
+BYTE-IDENTICAL
+```
+
+对照组 `found=0`（F9 完全 no-op）；实验组
+`output_file -> 1` → `EDIT_STATE_SAVE observed` →
+`re-apply verified=1 mismatch=0 changed=1` → `re-applied proxy on 1 object(s)`。
 
 **v2 识别通道**：`EDIT_SECTION::get_project_file(g_edit)` →
 `PROJECT_FILE::get_project_file_path()`（`plugin2.h:1001`）拿到工程路径，
@@ -245,13 +260,17 @@ A′ 走「导出时读原文件」，下列问题在**导出路径**上自动�
   导出读原文件 ⇒ 无损；预览可能有轻微色偏，属预览-only 差异。
 - 失效粒度：一个素材被多个对象以不同 `再生位置` 切片段使用，指纹按「原文件」计算（已实现）。
 
-**仍未实跑（下一阶段验收，不宣称完成）**：
+**已验证**：真机 3 帧短工程导出的逐字节一致性、输出结束
+`CHANGE_EDIT_STATE` → 自动切回代理、写后读回校验。
 
-- 真机短区间导出的逐像素一致性（需把输出范围压到几帧，避免几 GB AVI）。
-- 输出结束 `CHANGE_EDIT_STATE` → 自动切回代理；取消导出 120 s 超时回滚。
-- 批量写 308 个对象的耗时与撤销栈；菜单点「ファイル出力」的路径
-  （`WH_GETMESSAGE` 抓不到 `WM_COMMAND`，需补 `WH_CALLWNDPROC`）。
+**仍未实跑（不宣称全部场景完成）**：
+
+- 菜单点「ファイル出力」的路径（`WH_GETMESSAGE` 抓不到 `WM_COMMAND`，需补
+  `WH_CALLWNDPROC`）；目前覆盖 F9。
+- `aps.aup2` 全量 308 个对象 / 2 场景的批量写入耗时、撤销栈合并、多场景切换。
+- 取消导出时的 120 s 超时回滚（逻辑已实现，未真机跑）。
 - 工程在宿主内被改过但未保存时，磁盘文本可能与内存状态不同步。
+- 宿主中途重启后需重新转换（切回代理依赖进程内缓存）。
 
 ---
 
@@ -260,8 +279,9 @@ A′ 走「导出时读原文件」，下列问题在**导出路径**上自动�
 - **P0（已完成）**：真机 A/B，瓶颈归属 ≥ 70% 落在视频对象。**实测 79–92%，通过。**
 - **P1（本轮完成）**：转码链路、`拡大率` 补偿、可逆工程派生、导出用工程副本。
   **同批次 56.5–56.8% 提速、逐像素等价、还原逐字节一致，通过。**
-- **P2（进行中）**：A′ 导出前自动还原工程已实现；F9 拦截 → 全场景还原 → SDK 读回一致
-  **真机四轮通过**。仍待真机短区间导出逐像素验证、输出结束自动切回代理验证。
+- **P2（核心闭环已验证）**：A′ 导出前自动还原工程，五轮真机通过；3 帧短工程双变体
+  导出 **逐字节一致（18,675,468 B）**、输出结束自动切回代理已验证。
+  剩余：菜单路径、`aps.aup2` 全量 308 对象实测、未保存工程的文本同步。
 - **P3**：并发路数扩展（10 → 79）与内存/句柄配额、UI 开关与进度提示。
 
 ### 优先级建议
@@ -280,13 +300,25 @@ A′ 走「导出时读原文件」，下列问题在**导出路径**上自动�
 
 ## 7. 改动边界
 
-未改任何插件代码 / DLL / 语言包 / ini / Release。新增的都是隔离目录里的测试资产：
-`ProxyLayer/host-test/video-ab/`：
+**P1（2026-11-20 早间）**：未改任何插件代码 / DLL / 语言包 / ini / Release。新增的都是
+隔离目录里的测试资产 `ProxyLayer/host-test/video-ab/`：
+
 - `make_video_proxy.py` — P1 原型工具链（transcode / convert / export / restore / verify）
 - `real-host-ab.ps1` + `analyze_real.py` — 真机 A/B 采集与分析
 - `assets/` — 4 个代理变体、32×N 个 NTFS 硬链接、`.plv.json` sidecar
 - `equiv/` — 单对象画面等价工程与并排截图
 - `real-runs/` — 各批次 manifest、日志切片、预览截图
 
-用户工程 `aps.aup2` 与 `IMG_2329.MOV` 的 mtime 未变，所有派生工程未被宿主写回，
-宿主进程全部退出。P1 工具链只读写 `video-ab/` 隔离目录。
+**P2 / A′（2026-11-20 ~ 21）**：改动进入正式插件 `src/ProxyLayer.cpp`
+（A′ 导出硬闸 + 标记门控的 headless 导出测试分支），发布为 **v0.3.7**。
+语言包、ini、图片代理路径均未改。新增测试资产在
+`ProxyLayer/host-test/p2-probe/` 与 `.../video-ab/export-equiv/`：
+
+- `P2ExportProbe.cpp` / `build_p2probe.sh` / `run-probe.ps1` — F9 时序与写锁探针
+- `run-a-prime.ps1` + `a-prime-run-1..4.log` — 四轮还原验证
+- `run-export-equiv.ps1` + `export-equiv/` — 3 帧短工程与双变体真导出对比
+- `P2_PROBE_REPORT.md` / `A_PRIME_IMPLEMENTATION.md` — 报告与实现说明
+
+五轮真机测试都只临时替换真机 `ProxyLayer.aux2`，`finally` 里从备份逐字节恢复并
+做 SHA256 校验（`19CB4078…A57E`）；探针用的 `module.ini` 信任登记同样逐字节恢复。
+用户工程 `aps.aup2` 与 `IMG_2329.MOV` 全程只读、mtime 未变，宿主进程全部退出。

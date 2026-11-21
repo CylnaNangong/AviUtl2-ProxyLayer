@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.3.7 — 2026-11-21（P2 / A′：视频代理的自动无损导出硬闸）
+
+### 要解决的问题
+
+P1 的视频代理是离线脚本改进工程：把 `動画ファイル` 的 `ファイル` 指向 1080p 代理，
+并把 `拡大率` ×2 补偿尺寸。预览因此提速 56%，但导出时若沿用代理，画质就受损；
+若直接切回 4K 原片而 `拡大率` 仍是 ×2，画面又会放大两倍。
+
+**为什么图片代理不需要这套机制**：图片代理是「渲染时换数据源」——工程零改动，
+滤镜逐帧读 `get_edit_state()` 就能回 L0 原图，一行 `if (saving) div = 1;` 即可。
+视频代理是「工程里换了文件」，必须把工程参数写回；而输出中 `call_edit_section()`
+会失败（`plugin2.h:734`），所以只能抢在输出开始前的时间窗。
+
+### A′ 方案
+
+真机探针（`host-test/p2-probe/P2_PROBE_REPORT.md`）证明：F9 的 `WM_KEYDOWN` 到达
+UI 线程时宿主仍是 `EDIT_STATE_EDIT(0)`，`call_edit_section()` 返回 1、回调执行、
+`EDIT_SECTION::info` 可用。于是：
+
+```
+RegisterPlugin → 线程级 WH_GETMESSAGE 钩子
+  └─ VK_F9 → 全场景扫描 → 还原 ファイル / 拡大率 → set_edited_state()
+      → 用户按 Enter 导出（工程已是原素材 + 原倍率）
+      → CHANGE_EDIT_STATE(SAVE→EDIT) → WM_TIMER 自动切回代理
+      → 取消导出：120 s 超时回滚
+```
+
+**不需要自定义输入插件**，`register_input_plugin()` / `lwinput` 转发 / VFR 帧映射
+等原 P2 设想全部绕开 —— 导出读的就是原始文件，音频、色彩标签、旋转矩阵、
+`mebx` 元数据轨全部自动无损。
+
+### 关键坑：宿主丢弃未知 .aup2 item
+
+第二轮诊断日志 `objects=1 video=1 file=1 scale=1` 但 `metaFile=0 metaScale=0`
+证明宿主加载工程时**丢弃了 P1 写进效果块的 `元の動画ファイル` / `元の拡大率`**，
+`get_effect_item_value()` 永远读不到。改为在 edit 回调里用
+`PROJECT_FILE::get_project_file_path()`（`plugin2.h:1001`）拿到工程路径，
+直接解析 UTF-8 `.aup2` 文本（`[scene.N]` / `[N]` / `[N.M]`），按 `(layer, frame)`
+用 `find_object()` 定位对象写回。拿到的是用户真实原素材路径。
+
+### 真机验证（AviUtl2 2.1.18b，5 轮，每轮 DLL 均逐字节恢复）
+
+| 轮次 | 结果 |
+| --- | --- |
+| 1 | `found=0`，原因未知 → 不猜，先加诊断日志 |
+| 2 | 定位为宿主丢弃未知 item |
+| 3 | 工程文本解析：`found=1 changed=1`（16 ms） |
+| 4 | 写后读回：`verified=1 mismatch=0 changed=1` |
+| 5 | **3 帧短工程双变体真导出，两个 AVI 逐字节一致** |
+
+第五轮决定性数据（内置 `AVIファイル出力`，`output_file()` headless 触发）：
+
+```
+control    sha256=1512727C2FA0CD3532FE99BB16ABD6D86175B374055A40042BB97CAE57A31FF60  size=18675468
+experiment sha256=1512727C2FA0CD3532FE99BB16ABD6D86175B374055A40042BB97CAE57A31FF60  size=18675468
+BYTE-IDENTICAL
+```
+
+同时验证：对照组 `found=0`（F9 完全 no-op）；实验组
+`output_file -> 1` → `EDIT_STATE_SAVE observed` → `re-apply verified=1 mismatch=0`
+→ `re-applied proxy on 1 object(s)`（输出结束自动切回代理）。
+
+### 已知限制（不宣称全部场景完成）
+
+- 菜单点「ファイル出力」的路径未覆盖（`WH_GETMESSAGE` 抓不到 `WM_COMMAND`，需补
+  `WH_CALLWNDPROC`）；目前覆盖 F9。
+- 全量 308 个对象的批量写入耗时、撤销栈合并、多场景切换尚未在 `aps.aup2` 上实测；
+  本次用 1 对象 / 1 场景的 3 帧短工程做逐字节验证。
+- 若用户在宿主里改过工程但未保存，磁盘文本与内存状态可能不同步。
+- 切回代理依赖进程内缓存；宿主中途重启会停在「原素材」状态（安全，但需重新转换）。
+- 图片代理路径、语言包、ini 均未改动。
+
 ## v0.3.6 — 2026-11-18（两个真机 bugfix：Default 面板文案、OFF 还原链接损坏）
 
 用户报告两个问题，都在真机复现并有决定性证据：
