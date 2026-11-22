@@ -70,6 +70,9 @@
 
 ## 3. 为什么不能照搬现有架构
 
+> 转码后端（解除 QSVEnc 绑定，改用 ffmpeg / NVEncC / 自定义命令模板）见
+> [`ENCODER_BACKENDS.md`](ENCODER_BACKENDS.md)。导出端本身与编码器无关。
+
 | 约束 | 证据 |
 | --- | --- |
 | **成本模型相反** | 现有收益来自「一次解码原图 → 生成代理 → 之后每帧 `SourceView empty{}` 不再请求原图」。缓存键 `MakeKey(file, div, w, h)` **不含帧号**，每文件一张；视频每帧内容不同 → 无法跨帧复用，每帧仍要解码全分辨率，还多一次降采样 + `set_image_data` → 净收益为负 |
