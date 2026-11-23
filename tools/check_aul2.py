@@ -44,6 +44,8 @@ FORBIDDEN_KEYS = {"ProxyLayer"}          # never translate the plugin name
 PANEL_KEYS = [
     "title", "switch", "ok", "cancel", "on", "off", "unsaved", "status",
     "menu.auto", "menu.settings", "menu.keepall", "menu.restore",
+    # v0.3.8: encoder backend selector + probe button
+    "encoder", "test", "encoder_ok", "encoder_missing",
 ]
 
 C_STRING = r'L"((?:[^"\\]|\\.)*)"'

@@ -1784,17 +1784,148 @@ static void AutoTestWorker() {
 // popup with WM_CLOSE -> SW_HIDE (keeps the HWND so the menu can reopen it),
 // an explicit 关闭 button, and a TOGGLING menu item.
 //------------------------------------------------------------------------------
+// --- P3: encoder backend preference --------------------------------------
+// The transcode tool chain (tools/make_video_proxy.py, shipped in the release
+// zips) is no longer tied to QSVEncC. The panel lets the user pick a backend,
+// persist it globally, and test whether that encoder exists on this machine.
+static const char*    kEncoderChoicesA[] = {
+    "auto", "qsvencc", "nvenc", "ffmpeg", "custom"
+};
+static const wchar_t* kEncoderChoicesW[] = {
+    L"auto", L"QSVEncC", L"NVEncC", L"ffmpeg", L"custom"
+};
+static const int kEncoderCount = 5;
+
+static std::string ReadEncoderPref() {
+    const std::wstring p = PluginDataFile(L"proxy-encoder.txt");
+    if (p.empty()) return "auto";
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return "auto";
+    char buf[256] = {};
+    DWORD got = 0;
+    ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(h);
+    std::string line;
+    for (DWORD i = 0; i < got; ++i) {
+        if (buf[i] == '\r' || buf[i] == '\n') break;
+        line.push_back(buf[i]);
+    }
+    for (int i = 0; i < kEncoderCount; ++i)
+        if (line == kEncoderChoicesA[i]) return line;
+    return "auto";
+}
+
+static void WriteEncoderPref(const std::string& value) {
+    const std::wstring p = PluginDataFile(L"proxy-encoder.txt");
+    if (p.empty()) return;
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(h, value.c_str(), (DWORD)value.size(), &written, nullptr);
+    CloseHandle(h);
+    LogF(L"Panel: encoder preference saved = %hs", value.c_str());
+}
+
+struct EncoderSpec {
+    const wchar_t* env;
+    const wchar_t* exe;
+    const wchar_t* knownPath;
+};
+static const EncoderSpec kEncoderSpecs[] = {
+    { L"PROXYLAYER_QSVENCC", L"QSVEncC64.exe",
+      L"C:\\ProgramData\\aviutl2\\Plugin\\exe_files\\QSVEncC\\x64\\QSVEncC64.exe" },
+    { L"PROXYLAYER_NVENCC", L"NVEncC64.exe",
+      L"C:\\ProgramData\\aviutl2\\Plugin\\exe_files\\NVEncC\\x64\\NVEncC64.exe" },
+    { L"PROXYLAYER_FFMPEG", L"ffmpeg.exe", nullptr },
+};
+static const char* kEncoderAutoOrder[] = { "qsvencc", "nvenc", "ffmpeg" };
+
+static bool FindEncoderExe(const std::string& backend, std::wstring* out) {
+    if (backend == "custom") {
+        wchar_t buf[1024] = {};
+        if (GetEnvironmentVariableW(L"PROXYLAYER_ENCODER_EXE", buf, 1024) &&
+            buf[0] && GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) {
+            *out = buf;
+            return true;
+        }
+        return false;
+    }
+    if (backend == "auto") {
+        for (const char* name : kEncoderAutoOrder)
+            if (FindEncoderExe(name, out)) return true;
+        return false;
+    }
+    int idx = -1;
+    if (backend == "qsvencc") idx = 0;
+    else if (backend == "nvenc") idx = 1;
+    else if (backend == "ffmpeg") idx = 2;
+    if (idx < 0) return false;
+    const EncoderSpec& s = kEncoderSpecs[idx];
+    wchar_t buf[1024] = {};
+    if (GetEnvironmentVariableW(s.env, buf, 1024) && buf[0] &&
+        GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) {
+        *out = buf;
+        return true;
+    }
+    wchar_t found[MAX_PATH] = {};
+    if (SearchPathW(nullptr, s.exe, nullptr, MAX_PATH, found, nullptr)) {
+        *out = found;
+        return true;
+    }
+    if (s.knownPath &&
+        GetFileAttributesW(s.knownPath) != INVALID_FILE_ATTRIBUTES) {
+        *out = s.knownPath;
+        return true;
+    }
+    return false;
+}
+
+// Runs the selected encoder with --version and reports availability. This is
+// only a probe: no transcode, no project change, no output file.
+static std::wstring TestEncoderBackend(const std::string& backend) {
+    std::wstring exe;
+    if (!FindEncoderExe(backend, &exe)) {
+        return T(L"encoder_missing", L"見つかりません / not found") +
+               std::wstring(L"  (set PROXYLAYER_* or install the encoder)");
+    }
+    std::wstring cmd = L"\"" + exe + L"\" --version";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!ok) {
+        return T(L"encoder_missing", L"起動できません / cannot launch") +
+               std::wstring(L": ") + exe;
+    }
+    WaitForSingleObject(pi.hProcess, 5000);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    wchar_t tail[64];
+    _snwprintf_s(tail, _countof(tail), _TRUNCATE, L"  (exit %u)", (unsigned)code);
+    return T(L"encoder_ok", L"利用可能 / available") +
+           std::wstring(L": ") + exe + tail;
+}
+
 static const wchar_t* kPanelClass = L"ProxyLayerSettings";
 static HWND g_panel = nullptr;
 static HWND g_host_wnd = nullptr;
 static HWND g_panel_check  = nullptr;
 static HWND g_panel_status = nullptr;
-enum : int { IDC_SWITCH = 1001, IDC_OK = 1002, IDC_CANCEL = 1003 };
+static HWND g_panel_enc_label = nullptr, g_panel_encoder = nullptr;
+static HWND g_panel_enc_status = nullptr, g_btn_test = nullptr;
+enum : int { IDC_SWITCH = 1001, IDC_OK = 1002, IDC_CANCEL = 1003,
+             IDC_ENCODER = 1004, IDC_TEST = 1005 };
 // Client-area size (the outer window is computed with AdjustWindowRectEx).
 // Bigger than v0.2's 300x220: users with large system fonts clipped the OK /
 // Cancel buttons. WM_SIZE now re-lays out every control to the real client
 // rect, so font size / DPI can never push buttons out of view again.
-static const int kPanelW = 360, kPanelH = 270;
+// v0.3.8 adds the encoder backend row above the status block.
+static const int kPanelW = 360, kPanelH = 360;
 static HWND g_btn_ok = nullptr, g_btn_cancel = nullptr;
 // Draft state: window edits change ONLY this. OK commits to the global
 // preference; Cancel / caption X discards. Menu switches stay immediate.
@@ -1854,28 +1985,56 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // v0.3.6: record the RESOLVED strings. If a language pack is missing a
         // [Panel] key the host returns the key itself, so this line makes the
         // "title"/"ok" placeholder regression visible without a screenshot.
-        LogF(L"Panel[lang]: title='%s' switch='%s' ok='%s' cancel='%s' status='%s'",
+        LogF(L"Panel[lang]: title='%s' switch='%s' ok='%s' cancel='%s' status='%s' "
+             L"encoder='%s' test='%s'",
              T(L"title", L"ProxyLayer 自動プロキシ").c_str(), sw.c_str(),
              ok.c_str(), cancel.c_str(),
-             T(L"status", L"現在: %s   草稿: %s%s").c_str());
+             T(L"status", L"現在: %s   草稿: %s%s").c_str(),
+             T(L"encoder", L"エンコーダ / Encoder").c_str(),
+             T(L"test", L"テスト").c_str());
         g_panel_check = CreateWindowExW(0, L"BUTTON", sw.c_str(),
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 12, 12, 336, 24,
             h, (HMENU)IDC_SWITCH, hi, nullptr);
         HWND sep = CreateWindowExW(0, L"STATIC", L"",
             WS_VISIBLE | WS_CHILD | SS_ETCHEDHORZ, 12, 46, 336, 2,
             h, nullptr, hi, nullptr);
+        g_panel_enc_label = CreateWindowExW(0, L"STATIC",
+            T(L"encoder", L"エンコーダ / Encoder").c_str(),
+            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 54, 200, 20,
+            h, nullptr, hi, nullptr);
+        g_panel_encoder = CreateWindowExW(0, L"COMBOBOX", L"",
+            WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
+            12, 76, 240, 120, h, (HMENU)IDC_ENCODER, hi, nullptr);
+        for (int i = 0; i < kEncoderCount; ++i)
+            SendMessageW(g_panel_encoder, CB_ADDSTRING, 0,
+                         (LPARAM)kEncoderChoicesW[i]);
+        const std::string pref = ReadEncoderPref();
+        int sel = 0;
+        for (int i = 0; i < kEncoderCount; ++i)
+            if (pref == kEncoderChoicesA[i]) { sel = i; break; }
+        SendMessageW(g_panel_encoder, CB_SETCURSEL, (WPARAM)sel, 0);
+        g_btn_test = CreateWindowExW(0, L"BUTTON",
+            T(L"test", L"テスト").c_str(),
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 264, 76, 84, 24,
+            h, (HMENU)IDC_TEST, hi, nullptr);
+        g_panel_enc_status = CreateWindowExW(0, L"STATIC", L"",
+            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 106, 336, 36,
+            h, nullptr, hi, nullptr);
         g_panel_status = CreateWindowExW(0, L"STATIC", L"",
-            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 56, 336, 150,
+            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX, 12, 150, 336, 120,
             h, nullptr, hi, nullptr);
         g_btn_ok = CreateWindowExW(0, L"BUTTON", ok.c_str(),
-            WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 180, 216, 84, 30,
+            WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 180, 306, 84, 30,
             h, (HMENU)IDC_OK, hi, nullptr);
         g_btn_cancel = CreateWindowExW(0, L"BUTTON", cancel.c_str(),
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 264, 216, 84, 30,
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 264, 306, 84, 30,
             h, (HMENU)IDC_CANCEL, hi, nullptr);
         SetChildFont(g_panel_check); SetChildFont(sep);
+        SetChildFont(g_panel_enc_label); SetChildFont(g_panel_encoder);
+        SetChildFont(g_panel_enc_status); SetChildFont(g_btn_test);
         SetChildFont(g_panel_status); SetChildFont(g_btn_ok); SetChildFont(g_btn_cancel);
         UpdatePanelStatus();
+        LogF(L"Panel: encoder pref at open = %hs", pref.c_str());
         return 0;
     }
     case WM_SIZE: {
@@ -1883,9 +2042,10 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // status block takes whatever height is left. Large system fonts can
         // no longer push the buttons outside the window.
         const int cw = (int)LOWORD(l), ch = (int)HIWORD(l);
-        if (cw < 120 || ch < 120) return 0;
+        if (cw < 120 || ch < 200) return 0;
         const int margin = 12, btnW = 84, btnH = 30, gap = 8;
         const int btnY = ch - btnH - margin;
+        const int innerW = cw - margin * 2;
         if (g_btn_ok)
             SetWindowPos(g_btn_ok, nullptr, cw - margin - btnW * 2 - gap, btnY,
                          btnW, btnH, SWP_NOZORDER);
@@ -1893,12 +2053,24 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetWindowPos(g_btn_cancel, nullptr, cw - margin - btnW, btnY,
                          btnW, btnH, SWP_NOZORDER);
         if (g_panel_check)
-            SetWindowPos(g_panel_check, nullptr, margin, 12,
-                         cw - margin * 2, 24, SWP_NOZORDER);
+            SetWindowPos(g_panel_check, nullptr, margin, 12, innerW, 24,
+                         SWP_NOZORDER);
+        if (g_panel_enc_label)
+            SetWindowPos(g_panel_enc_label, nullptr, margin, 52, innerW, 20,
+                         SWP_NOZORDER);
+        if (g_panel_encoder)
+            SetWindowPos(g_panel_encoder, nullptr, margin, 74,
+                         innerW - btnW - gap, 120, SWP_NOZORDER);
+        if (g_btn_test)
+            SetWindowPos(g_btn_test, nullptr, cw - margin - btnW, 74,
+                         btnW, 24, SWP_NOZORDER);
+        if (g_panel_enc_status)
+            SetWindowPos(g_panel_enc_status, nullptr, margin, 104, innerW, 40,
+                         SWP_NOZORDER);
         if (g_panel_status) {
-            const int top = 56, hgt = btnY - top - 10;
+            const int top = 150, hgt = btnY - top - 10;
             SetWindowPos(g_panel_status, nullptr, margin, top,
-                         cw - margin * 2, hgt > 40 ? hgt : 40, SWP_NOZORDER);
+                         innerW, hgt > 40 ? hgt : 40, SWP_NOZORDER);
         }
         return 0;
     }
@@ -1908,6 +2080,21 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             // Draft only: nothing is applied or saved until OK.
             g_panel_draft.store(IsDlgButtonChecked(h, IDC_SWITCH) == BST_CHECKED);
             UpdatePanelStatus();
+            return 0;
+        }
+        if (id == IDC_ENCODER && HIWORD(w) == CBN_SELCHANGE) {
+            const int sel = (int)SendMessageW(g_panel_encoder, CB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < kEncoderCount)
+                WriteEncoderPref(kEncoderChoicesA[sel]);
+            return 0;
+        }
+        if (id == IDC_TEST) {
+            const std::string backend = ReadEncoderPref();
+            const std::wstring result = TestEncoderBackend(backend);
+            if (g_panel_enc_status)
+                SetWindowTextW(g_panel_enc_status, result.c_str());
+            LogF(L"Panel: encoder test [%hs] -> %s",
+                 backend.c_str(), result.c_str());
             return 0;
         }
         if (id == IDC_OK)     { CommitPanel(h); SetFocus(nullptr); return 0; }
@@ -1922,6 +2109,8 @@ static LRESULT CALLBACK PanelWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_DESTROY:
         g_panel = nullptr; g_panel_check = nullptr; g_panel_status = nullptr;
         g_btn_ok = nullptr; g_btn_cancel = nullptr;
+        g_panel_enc_label = nullptr; g_panel_encoder = nullptr;
+        g_panel_enc_status = nullptr; g_btn_test = nullptr;
         return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -2260,6 +2449,25 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host) {
     // the UI-thread WM_TIMER created above.
     LogF(L"RegisterPlugin: editHandle=%p cache=%p logger=%p",
          (void*)g_edit, (void*)g_cache, (void*)g_logger);
+    {
+        const std::string pref = ReadEncoderPref();
+        std::wstring exe;
+        const bool found = FindEncoderExe(pref, &exe);
+        LogF(L"Panel: encoder pref=%hs detected=%d exe=%s",
+             pref.c_str(), (int)found,
+             exe.empty() ? L"(none)" : exe.c_str());
+    }
+    // TEST ONLY: with proxy-encodertest.on, open the panel and dispatch the
+    // encoder probe button so a headless real-host run can verify the new UI
+    // without simulating mouse input. Does not touch the auto-proxy switch.
+    const std::wstring etm = PluginDataFile(L"proxy-encodertest.on");
+    if (!etm.empty() &&
+        GetFileAttributesW(etm.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        g_panel && IsWindow(g_panel)) {
+        ShowWindow(g_panel, SW_SHOW);
+        SendMessageW(g_panel, WM_COMMAND, MAKEWPARAM(IDC_TEST, BN_CLICKED), 0);
+        Log(L"Panel[enc-test]: auto probe dispatched");
+    }
     const std::wstring vpm = PluginDataFile(L"proxy-vpexport.on");
     if (!vpm.empty() &&
         GetFileAttributesW(vpm.c_str()) != INVALID_FILE_ATTRIBUTES) {

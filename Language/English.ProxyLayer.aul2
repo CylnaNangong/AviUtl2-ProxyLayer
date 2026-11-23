@@ -35,6 +35,10 @@ menu.auto=Auto Proxy (All Scenes) ON/OFF
 menu.settings=Settings Window (Show/Hide)
 menu.keepall=Keep All Layers Full-Res (Script Compat)
 menu.restore=Restore All Proxies
+encoder=Encoder (video proxy transcode)
+test=Test
+encoder_ok=Available
+encoder_missing=Not found
 
 [Tips.ProxyLayer]
 effect.name=One click converts every large still image in the WHOLE PROJECT into a downscaled proxy for smooth preview playback.\nExports always use the original full-resolution image.\nPick the source in "Image File" below: this REPLACES the object image input; it is not an overlay on an image file.

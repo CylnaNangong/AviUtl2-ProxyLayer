@@ -1,8 +1,9 @@
 # 转码后端（Encoder Backends）
 
-> 适用对象：`ProxyLayer/host-test/video-ab/make_video_proxy.py`（P1 离线工具链，仓库外）。
+> 适用对象：`Tools/make_video_proxy.py`（随 Release 分发）与插件设置面板（v0.3.8 起）。
 > 状态：**QSVEncC 已真机验证且逐字节零回归；NVEncC / ffmpeg / custom 仅命令构造级验证**。
-> 本次改动**不动插件 DLL、不动设置面板、不发 Release**（方向 A）。
+> 方向 A 解除硬编码；v0.3.8 加入面板后端选择 / 测试按钮并把工具链打进两个
+> 发布 zip。**在线转码仍未集成进插件**（P3-2）。
 
 ---
 
@@ -19,9 +20,10 @@
 `C:\ProgramData\aviutl2\Plugin\exe_files\QSVEncC\x64\QSVEncC64.exe`，
 命令带 `--avhw`（Intel QSV 硬解硬编），AMD / NVIDIA / 无核显机器都没有这个 exe。
 
-> 另需说明：视频代理目前**仍是离线 Python 脚本**，尚未集成进插件；
-> 设置面板（`[Panel]`）只有图片代理的开关与档位。因此「面板加自选 encoder」
-> 属于后续 P3（把转码搬进插件）才有承载对象，本次不做。
+> **v0.3.8 起**：设置面板已有「转码后端」下拉与「测试」按钮（见 §3.1），
+> 配置写入全局 `proxy-encoder.txt`，语言包三包同步。但**在线转码 / 在线改工程
+> 仍未集成进插件** —— 工具链作为 `Tools/` 随 Release 分发，仍需离线生成代理 +
+> 派生工程再打开。「面板选后端 → 插件自动转码当前工程」属于 P3-2。
 
 ---
 
@@ -84,6 +86,22 @@ python make_video_proxy.py transcode <src> --encoder-order ffmpeg,nvenc,qsvencc
 
 ---
 
+### 3.1 设置面板（v0.3.8）
+
+`ProxyLayer 设置窗口` 里新增一行：
+
+| 控件 | 作用 |
+| --- | --- |
+| 转码后端下拉 | `auto` / `QSVEncC` / `NVEncC` / `ffmpeg` / `custom`；选择即写入全局 `proxy-encoder.txt` |
+| 「测试」按钮 | 探测所选后端 exe 并启动 `--version`，在面板显示「可用 / 未找到 + 路径 + 退出码」 |
+
+探测顺序：环境变量 → PATH（`SearchPathW`）→ 已知安装路径（`auto` 按
+`qsvencc → nvenc → ffmpeg` 依次尝试）。测试按钮**不做任何转码、不改工程**。
+
+> 面板里的选择目前供配套工具使用；插件自身还不会据此自动转码当前工程（P3-2）。
+
+---
+
 ## 4. 命令与 custom 模板
 
 ```
@@ -142,6 +160,8 @@ sidecar `.plv.json` 新增 `encoder_backend` 与 `encoder_command` 字段，
 - **NVEncC / ffmpeg / custom 未在本机实跑**（本机没有对应 exe），只验证了命令构造；
   在装有这些工具的机器上仍需各跑一次 `transcode` + `convert` + 预览 A/B。
 - ffmpeg 的 VFR / 音轨拷贝行为、NVEncC 的选项兼容性均属**推定**，以实跑为准。
-- 视频代理仍是离线脚本、未进插件与设置面板（P3）。
-- 本次未改 `ProxyLayer.aux2`、语言包、ini、Release；用户工程与
-  `IMG_2329.MOV` 全程只读。
+- 视频代理仍是**离线工具链**（v0.3.8 起随 `Tools/` 分发），插件已能选择 /
+  测试后端，但还不会自动对当前工程在线转码与改工程（P3-2）。
+- v0.3.8 改动了 `ProxyLayer.aux2`（面板）、三份语言包（新增 4 个 `[Panel]` 键）、
+  `tools/check_aul2.py` 与 `packaging/build_release.py`；图片代理路径与
+  A′ 导出硬闸未改；用户工程与 `IMG_2329.MOV` 全程只读。

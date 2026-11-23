@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.3.8 — 2026-11-23（P3-1：设置面板自选转码后端 + 工具链随包分发）
+
+承接上一版的「解除 QSVEnc 绑定」：把后端选择从命令行搬进**插件设置面板**，
+并把离线工具链正式随 Release 分发。
+
+### 新增
+
+- **设置面板新增「转码后端」下拉**：`auto` / `QSVEncC` / `NVEncC` /
+  `ffmpeg` / `custom`。选择即刻写入全局配置 `proxy-encoder.txt`
+  （DLL 同目录，跨工程生效，不影响自动代理开关）。
+- **「测试」按钮**：按所选后端探测 exe（环境变量 → PATH → 已知安装路径），
+  启动 `--version` 并在面板显示「可用 / 未找到 + 路径 + 退出码」。
+  **只做可用性探测，不转码、不改工程、不生成文件。**
+- 路径覆盖：`PROXYLAYER_QSVENCC` / `PROXYLAYER_NVENCC` / `PROXYLAYER_FFMPEG` /
+  `PROXYLAYER_ENCODER_EXE`。
+- 语言包（Default / English / 简体中文）新增 `[Panel]` 4 键
+  `encoder / test / encoder_ok / encoder_missing`，`tools/check_aul2.py` 同步
+  为 **16 键全包强制检查**（CI 已验证 3 包 0 failure）。
+- **工具链随包分发**：`Tools/make_video_proxy.py` 与
+  `Tools/test_encoder_backends.py` 打进 `.au2pkg.zip` 与 `Installer.zip`，
+  用户不必从源码仓库取脚本；脚本支持前述四种后端与 `--dry-run` /
+  `list-backends` / 自定义命令模板。
+
+### 明确未做（P3-2，下一阶段）
+
+- **插件内在线转码与在线改工程**：目前仍需用 `Tools/` 里的脚本离线生成代理 +
+  派生工程，再打开派生工程。原因是后台转码线程、编辑锁与「宿主丢弃未知
+  `.aup2` item」三件事需要单独设计与真机验证，不与本次面板改动混做。
+- 面板的下拉只决定**配套工具**用哪个后端，不会自动对当前工程生成代理；
+  「生成视频代理」按钮尚未加入。
+- 图片代理路径、A′ 导出硬闸、语言包既有键、ini 均未改动。
+
+### 验证
+
+- 本地：`check_aul2.py` 3 包 16/16 键 0 failure；`py_compile` 全部工具脚本通过；
+  `build_release.py --tag v0.3.8` 两个 zip 均含 `Tools/` 与全部语言包；
+  `test_encoder_backends.py` 在仓库原位 18 项自检 ALL PASS。
+- 上一版已验证的零回归结论继续成立：默认 `auto` 在本机仍选中 QSVEncC，
+  生成的代理与 P1 实测文件逐字节一致（SHA256 `233fe9ca…82b`）。
+
 ## v0.3.7 — 2026-11-21（P2 / A′：视频代理的自动无损导出硬闸）
 
 ### 要解决的问题

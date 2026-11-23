@@ -35,3 +35,7 @@ menu.auto=自動プロキシ (ON/OFF)
 menu.settings=設定ウィンドウ (表示/非表示)
 menu.keepall=全レイヤーを元画像に維持
 menu.restore=プロキシを全て復元
+encoder=エンコーダ（動画プロキシ生成用）
+test=テスト
+encoder_ok=利用可能
+encoder_missing=見つかりません

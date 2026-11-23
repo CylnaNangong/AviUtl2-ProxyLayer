@@ -35,6 +35,10 @@ menu.auto=整个工程自动代理 (开/关)
 menu.settings=设置窗口 (显示/隐藏)
 menu.keepall=全部图层保持原图 (脚本兼容)
 menu.restore=恢复全部代理
+encoder=转码后端（生成视频代理）
+test=测试
+encoder_ok=可用
+encoder_missing=未找到
 
 [Tips.ProxyLayer]
 effect.name=把整个工程里的大尺寸静态图像一键换成低分辨率代理，让预览播放变流畅。\n导出 / 保存时自动还原原图，成片画质不受影响。\n在下方「图像文件」指定素材：这是替换物件的图像输入，不是叠加在图像文件之上的效果。

@@ -74,6 +74,12 @@ def build(tag: str, out_dir: Path) -> None:
     ini = read("packaging/package.ini", text=True).replace(b"{{TAG}}", tag.encode("utf-8"))
     notes = read("packaging/package.txt", text=True).decode("utf-8").replace("{{TAG}}", tag).encode("utf-8")
     packs = language_packs()
+    # v0.3.8: ship the offline video-proxy tool chain so users without Python
+    # checked out from the repo can still generate proxies with any encoder.
+    tools = [
+        ("Tools/make_video_proxy.py", read("tools/make_video_proxy.py", text=True)),
+        ("Tools/test_encoder_backends.py", read("tools/test_encoder_backends.py", text=True)),
+    ]
 
     # 1) Drag-and-drop AviUtl2 package: safe, plugin + display packs, never
     #    touches the folder next to aviutl2.exe.
@@ -82,6 +88,7 @@ def build(tag: str, out_dir: Path) -> None:
         ("package.txt", crlf(notes)),
         ("Plugin/ProxyLayer.aux2", plugin),
         *packs,
+        *tools,
     ])
 
     # 2) One-click installer: plugin + display packs + optional luaJIT.dll
@@ -95,6 +102,7 @@ def build(tag: str, out_dir: Path) -> None:
         ("Plugin/ProxyLayer.aux2", plugin),
         ("LuaProxy/luaJIT.dll", luaproxy),
         *packs,
+        *tools,
     ])
 
 
